@@ -15,9 +15,9 @@ import { getKeybindings, truncateToWidth, visibleWidth, wrapTextWithAnsi, type C
 type SettingsScope = "session" | "directory" | "global";
 type CellState = "unset" | "on" | "off";
 
-type SectionSettings = {
-	piDocumentation: boolean;
-};
+type PromptSectionName = "intro" | "tools" | "guidelines" | "piDocumentation" | "appendSection" | "projectContext" | "skills" | "runtimeContext";
+
+type SectionSettings = Record<PromptSectionName, boolean>;
 
 type SkillSettings = {
 	/** Explicit default for all configurable skills in this scope. */
@@ -44,6 +44,7 @@ type MatrixRow = {
 	previewLineLimit?: number;
 	effective: () => string;
 	cell?: (scope: SettingsScope) => CellState;
+	cellText?: (scope: SettingsScope) => string;
 	setCell?: (scope: SettingsScope, state: CellState) => void;
 	open?: (done: () => void) => Component;
 };
@@ -61,8 +62,6 @@ type MatrixOptions = {
 	search?: boolean;
 };
 
-type PromptSectionName = "intro" | "tools" | "guidelines" | "piDocumentation" | "appendSection" | "projectContext" | "skills" | "runtimeContext";
-
 type PromptSection = {
 	name: PromptSectionName;
 	start: number;
@@ -70,14 +69,35 @@ type PromptSection = {
 	text: string;
 };
 
+const PROMPT_SECTION_DEFINITIONS: Array<{ name: PromptSectionName; label: string; description: string }> = [
+	{ name: "intro", label: "Intro", description: "Opening identity and role instructions." },
+	{ name: "tools", label: "Tools", description: "Available tools list and tool-use instructions." },
+	{ name: "guidelines", label: "Guidelines", description: "General operating guidelines." },
+	{ name: "piDocumentation", label: "Pi documentation", description: "Pi's built-in documentation pointers." },
+	{ name: "appendSection", label: "Append section", description: "Additional system prompt text appended by settings or runtime options." },
+	{ name: "projectContext", label: "Project context", description: "Project context loaded by Pi." },
+	{ name: "skills", label: "Skills section", description: "The generated prompt section that tells the model when skills are available." },
+	{ name: "runtimeContext", label: "Runtime context", description: "Current date, working directory, and other runtime context." },
+];
+
 const DEFAULT_SECTIONS: SectionSettings = {
-	// Match Pi's normal behavior unless the user disables this section.
+	intro: true,
+	tools: true,
+	guidelines: true,
 	piDocumentation: true,
+	appendSection: true,
+	projectContext: true,
+	skills: true,
+	runtimeContext: true,
 };
 
 const CONFIG_FILE_NAME = "prompt-sections.json";
 const SESSION_SETTINGS_ENTRY_TYPE = "prompt-sections-settings";
 const SCOPES: SettingsScope[] = ["session", "directory", "global"];
+const SETTING_COLUMN_WIDTH = 30;
+const EFFECTIVE_COLUMN_WIDTH = 14;
+const SCOPE_COLUMN_WIDTH = 14;
+const FULL_PROMPT_VIEWER_FIXED_LINES = 5;
 
 let sessionConfig: PromptSectionsConfig = {};
 let latestBaseSystemPrompt: string | undefined;
@@ -97,15 +117,11 @@ export default function promptSections(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event) => {
 		latestBaseSystemPrompt = event.systemPrompt;
 		const promptSections = splitSystemPrompt(event.systemPrompt, event.systemPromptOptions);
-		const sections = effectiveSections(event.systemPromptOptions.cwd);
+		const sectionSettings = effectiveSections(event.systemPromptOptions.cwd);
+		const withoutDisabledSections = removeDisabledSections(event.systemPrompt, promptSections, sectionSettings);
+		const filtered = filterSkillsInExistingPrompt(withoutDisabledSections, event.systemPromptOptions);
 
-		if (event.systemPromptOptions.customPrompt || sections.piDocumentation) {
-			return filterSkillsInExistingPrompt(event.systemPrompt, event.systemPromptOptions);
-		}
-
-		const withoutDocs = removePromptSection(event.systemPrompt, promptSections, "piDocumentation");
-		const filtered = filterSkillsInExistingPrompt(withoutDocs, event.systemPromptOptions);
-		return filtered ?? { systemPrompt: withoutDocs };
+		return filtered ?? (withoutDisabledSections === event.systemPrompt ? undefined : { systemPrompt: withoutDisabledSections });
 	});
 }
 
@@ -149,10 +165,16 @@ function addRuntimeContextMarker(markers: Array<{ name: PromptSectionName; start
 	if (match?.index !== undefined) markers.push({ name: "runtimeContext", start: match.index + 1 });
 }
 
-function removePromptSection(systemPrompt: string, sections: PromptSection[], name: PromptSectionName): string {
-	const section = sections.find((candidate) => candidate.name === name);
-	if (!section) return systemPrompt;
-	return `${systemPrompt.slice(0, section.start).trimEnd()}\n\n${systemPrompt.slice(section.end).trimStart()}`;
+function removeDisabledSections(systemPrompt: string, sections: PromptSection[], settings: SectionSettings): string {
+	let nextPrompt = systemPrompt;
+	for (const section of [...sections].reverse()) {
+		if (!settings[section.name]) nextPrompt = removePromptRange(nextPrompt, section.start, section.end);
+	}
+	return nextPrompt;
+}
+
+function removePromptRange(systemPrompt: string, start: number, end: number): string {
+	return [systemPrompt.slice(0, start).trimEnd(), systemPrompt.slice(end).trimStart()].filter(Boolean).join("\n\n");
 }
 
 function promptSectionText(name: PromptSectionName): string | undefined {
@@ -168,6 +190,8 @@ function filterSkillsInExistingPrompt(systemPrompt: string, options: BuildSystem
 function filterSkillsInPrompt(systemPrompt: string, skills: Skill[], allowedSkills: Set<string>): string {
 	const currentSkillBlock = formatSkillsForPrompt(skills);
 	if (!currentSkillBlock) return systemPrompt;
+	if (allowedSkills.size === 0) return systemPrompt.replace(currentSkillBlock, "");
+
 	const nextSkillBlock = formatSkillsForPrompt(configurableSkills(skills).filter((skill) => allowedSkills.has(skill.name)));
 	return systemPrompt.replace(currentSkillBlock, nextSkillBlock);
 }
@@ -203,37 +227,51 @@ function mainRows(
 	fullPageSize: () => number,
 ): MatrixRow[] {
 	const basePrompt = latestBaseSystemPrompt ?? "";
+	const sectionRows = promptSectionRows(configs, saveScope);
+	sectionRows.splice(sectionRows.findIndex((row) => row.id === "skills") + 1, 0, {
+		id: "skillInvocations",
+		label: "Skill invocations in prompt",
+		description: "Enter opens individual skills.",
+		preview: () => promptSectionText("skills") ?? formatSkillsForPrompt(configurableSkills(skills)),
+		effective: () => skillsSummary(skills, effectiveAllowedSkillNames(configs, skills)),
+		cellText: (scope) => skillScopeSummary(configs[scope]),
+		open: (done) => createSkillsMatrix(skills, configs, saveScope, done, theme),
+	});
+
 	return [
 		{
 			id: "fullPrompt",
 			label: "Full system prompt",
-			description: "Enter opens the full effective system prompt preview.",
+			description: "Enter opens the full effective system prompt preview. In preview, press p to hide or show disabled parts.",
 			previewLines: (width) => fullSystemPromptPreviewLines(basePrompt, configs, skills, width),
 			previewLineLimit: 12,
 			effective: () => "preview",
-			open: (done) => createPromptViewer("Full system prompt", (width) => fullSystemPromptPreviewLines(basePrompt, configs, skills, width), theme, fullPageSize, done),
+			open: (done) => createFullPromptViewer(
+				(width, hideDisabledParts) => hideDisabledParts
+					? enabledSystemPromptPreviewLines(basePrompt, configs, skills, width)
+					: fullSystemPromptPreviewLines(basePrompt, configs, skills, width),
+				theme,
+				fullPageSize,
+				done,
+			),
 		},
-		{
-			id: "piDocumentation",
-			label: "Pi documentation",
-			description: "Include Pi's built-in documentation pointers in the system prompt.",
-			preview: () => promptSectionText("piDocumentation") ?? "",
-			effective: () => onOff(resolveSection(configs, "piDocumentation")),
-			cell: (scope) => sectionCell(configs[scope], "piDocumentation"),
-			setCell: (scope, state) => {
-				setSectionCell(configs[scope], "piDocumentation", state);
-				saveScope(scope);
-			},
-		},
-		{
-			id: "skills",
-			label: "Skill invocations in prompt",
-			description: "Enter opens individual skills.",
-			preview: () => promptSectionText("skills") ?? formatSkillsForPrompt(configurableSkills(skills)),
-			effective: () => skillsSummary(skills, effectiveAllowedSkillNames(configs, skills)),
-			open: (done) => createSkillsMatrix(skills, configs, saveScope, done, theme),
-		},
+		...sectionRows,
 	];
+}
+
+function promptSectionRows(configs: ScopedConfigs, saveScope: (scope: SettingsScope) => void): MatrixRow[] {
+	return PROMPT_SECTION_DEFINITIONS.map((section) => ({
+		id: section.name,
+		label: section.label,
+		description: section.description,
+		preview: () => promptSectionText(section.name) ?? "",
+		effective: () => onOff(resolveSection(configs, section.name)),
+		cell: (scope) => sectionCell(configs[scope], section.name),
+		setCell: (scope, state) => {
+			setSectionCell(configs[scope], section.name, state);
+			saveScope(scope);
+		},
+	}));
 }
 
 function createSkillsMatrix(skills: Skill[], configs: ScopedConfigs, saveScope: (scope: SettingsScope) => void, done: () => void, theme: Theme): Component {
@@ -370,19 +408,19 @@ function createMatrix(rows: MatrixRow[], options: MatrixOptions): Component {
 	}
 }
 
-function createPromptViewer(
-	title: string,
-	linesForWidth: (width: number) => string[],
+function createFullPromptViewer(
+	linesForWidth: (width: number, hideDisabledParts: boolean) => string[],
 	theme: Theme,
 	pageSize: () => number,
 	done: () => void,
 ): Component {
 	let scroll = 0;
-	const contentLineCount = () => Math.max(1, pageSize() - 5);
+	let hideDisabledParts = false;
+	const contentLineCount = () => Math.max(1, pageSize() - FULL_PROMPT_VIEWER_FIXED_LINES);
 
 	return {
 		render: (width) => {
-			const contentLines = linesForWidth(width);
+			const contentLines = linesForWidth(width, hideDisabledParts);
 			const visibleLineCount = contentLineCount();
 			const pageCount = Math.max(1, Math.ceil(contentLines.length / visibleLineCount));
 			const currentPage = Math.min(pageFromScroll(scroll, visibleLineCount), pageCount - 1);
@@ -390,13 +428,13 @@ function createPromptViewer(
 			const visible = contentLines.slice(scroll, scroll + visibleLineCount);
 			const filler = Array.from({ length: Math.max(0, visibleLineCount - visible.length) }, () => "");
 			return [
-				truncate(styleTitle(theme, title), width),
+				truncate(styleTitle(theme, "Full system prompt"), width),
 				formatPreviewHeader(width, theme),
 				...visible,
 				...filler,
-				truncate(`  Page ${currentPage + 1}/${pageCount}`, width),
+				truncate(`  Page ${currentPage + 1}/${pageCount} · ${hideDisabledParts ? "disabled hidden" : "disabled shown"}`, width),
 				"",
-				truncate("  ↑/↓ scroll · ←/→ page · Esc back", width),
+				truncate("  ↑/↓ scroll · ←/→ page · p hide/show disabled · Esc back", width),
 			];
 		},
 		handleInput: (data) => {
@@ -405,7 +443,10 @@ function createPromptViewer(
 			else if (isDown(data)) scroll++;
 			else if (isLeft(data)) scroll = Math.max(0, (pageFromScroll(scroll, visibleLineCount) - 1) * visibleLineCount);
 			else if (isRight(data)) scroll = (pageFromScroll(scroll, visibleLineCount) + 1) * visibleLineCount;
-			else if (isEscape(data)) done();
+			else if (isPromptToggleKey(data)) {
+				hideDisabledParts = !hideDisabledParts;
+				scroll = 0;
+			} else if (isEscape(data)) done();
 		},
 	};
 }
@@ -438,12 +479,22 @@ function renderPreview(lines: string[], row: MatrixRow, width: number, theme: Th
 function fullSystemPromptPreviewLines(basePrompt: string, configs: ScopedConfigs, skills: Skill[], width: number): string[] {
 	const sections = splitSystemPrompt(basePrompt);
 	const allowedSkills = effectiveAllowedSkillNames(configs, skills);
-	const skillBlocks = skillPromptBlocks(sections.find((section) => section.name === "skills"), allowedSkills);
+	const allSkillsDisabled = configurableSkills(skills).length > 0 && allowedSkills.size === 0;
+	const skillBlocks = allSkillsDisabled ? [] : skillPromptBlocks(sections.find((section) => section.name === "skills"), allowedSkills);
 	return promptLinesWithOffsets(basePrompt).flatMap((line) => {
 		const section = sectionForOffset(sections, line.start);
-		const label = previewLabel(section, line.start, configs, skillBlocks);
+		const label = previewLabel(section, line.start, configs, skillBlocks, allSkillsDisabled);
 		return previewLine(line.text, width, label);
 	});
+}
+
+function enabledSystemPromptPreviewLines(basePrompt: string, configs: ScopedConfigs, skills: Skill[], width: number): string[] {
+	return fullSystemPromptPreviewLines(effectiveSystemPrompt(basePrompt, configs, skills), configs, skills, width);
+}
+
+function effectiveSystemPrompt(basePrompt: string, configs: ScopedConfigs, skills: Skill[]): string {
+	const promptWithSectionsRemoved = removeDisabledSections(basePrompt, splitSystemPrompt(basePrompt), resolvedSections(configs));
+	return filterSkillsInPrompt(promptWithSectionsRemoved, skills, effectiveAllowedSkillNames(configs, skills));
 }
 
 function promptLinesWithOffsets(text: string): Array<{ text: string; start: number }> {
@@ -465,11 +516,15 @@ function previewLabel(
 	offset: number,
 	configs: ScopedConfigs,
 	skillBlocks: Array<{ start: number; end: number; label: string }>,
+	allSkillsDisabled: boolean,
 ): string {
 	if (!section) return "Prompt";
-	if (section.name === "piDocumentation" && !resolveSection(configs, "piDocumentation")) return "Pi docs [disabled]";
-	if (section.name === "skills") return skillBlocks.find((block) => offset >= block.start && offset < block.end)?.label ?? "S:Skills";
-	return sectionLabel(section.name);
+	if (section.name === "skills") {
+		if (!resolveSection(configs, "skills") || allSkillsDisabled) return "S:Skills [disabled]";
+		return skillBlocks.find((block) => offset >= block.start && offset < block.end)?.label ?? "S:Skills";
+	}
+	const label = sectionLabel(section.name);
+	return resolveSection(configs, section.name) ? label : `${label} [disabled]`;
 }
 
 function skillPromptBlocks(section: PromptSection | undefined, allowedSkills: Set<string>): Array<{ start: number; end: number; label: string }> {
@@ -524,6 +579,7 @@ function formatPreviewHeader(width: number, theme: Theme): string {
 	return truncate(boldText(theme, `${pad("Section", labelWidth)} │ ${pad("Prompt", textWidth)}`), width);
 }
 
+
 function sectionLabel(name: PromptSectionName): string {
 	if (name === "piDocumentation") return "Pi docs";
 	if (name === "appendSection") return "Append";
@@ -533,17 +589,17 @@ function sectionLabel(name: PromptSectionName): string {
 }
 
 function formatHeader(width: number, theme: Theme): string {
-	return truncate(boldText(theme, `  ${pad("Setting", 30)}  ${pad("Effective", 12)}  ${pad("Session", 9)}  ${pad("Directory", 9)}  ${pad("Global", 9)}`), width);
+	return truncate(boldText(theme, `  ${pad("Setting", SETTING_COLUMN_WIDTH)}  ${pad("Effective", EFFECTIVE_COLUMN_WIDTH)}  ${pad("Session", SCOPE_COLUMN_WIDTH)}  ${pad("Directory", SCOPE_COLUMN_WIDTH)}  ${pad("Global", SCOPE_COLUMN_WIDTH)}`), width);
 }
 
 function formatRow(row: MatrixRow, selected: boolean, width: number): string {
-	const values = SCOPES.map((scope) => formatCell(row.cell?.(scope) ?? "unset"));
+	const values = SCOPES.map((scope) => formatCell(row.cellText?.(scope) ?? row.cell?.(scope) ?? "unset"));
 	const prefix = selected ? "▸ " : "  ";
-	return truncate(`${prefix}${pad(row.label, 30)}  ${pad(row.effective(), 12)}  ${values.join("  ")}`, width);
+	return truncate(`${prefix}${pad(row.label, SETTING_COLUMN_WIDTH)}  ${pad(row.effective(), EFFECTIVE_COLUMN_WIDTH)}  ${values.join("  ")}`, width);
 }
 
-function formatCell(value: CellState): string {
-	return pad(value === "unset" ? "—" : value, 9);
+function formatCell(value: CellState | string): string {
+	return pad(value === "unset" || value === "" ? "—" : value, SCOPE_COLUMN_WIDTH);
 }
 
 function pad(text: string, width: number): string {
@@ -564,8 +620,8 @@ function boldText(theme: Theme, text: string): string {
 }
 
 function nextCellState(current: CellState): CellState {
-	if (current === "unset") return "on";
-	if (current === "on") return "off";
+	if (current === "unset") return "off";
+	if (current === "off") return "on";
 	return "unset";
 }
 
@@ -644,6 +700,24 @@ function skillsSummary(skills: Skill[], allowedSkills: Set<string>): string {
 	return `${visibleSkillCount(skills, allowedSkills)}/${visibleByDefaultSkillNames(skills).length} visible`;
 }
 
+function skillScopeSummary(config: PromptSectionsConfig): string {
+	const settings = config.skills;
+	if (!settings) return "";
+
+	const allowCount = settings.allow?.length ?? 0;
+	const denyCount = settings.deny?.length ?? 0;
+	const hasDefault = hasOwn(settings, "default");
+	if (!hasDefault && allowCount === 0 && denyCount === 0) return "";
+
+	if (settings.default === true) return joinSummaryParts("all on", denyCount ? `${denyCount} off` : "");
+	if (settings.default === false) return joinSummaryParts("all off", allowCount ? `${allowCount} on` : "");
+	return joinSummaryParts(allowCount ? `${allowCount} on` : "", denyCount ? `${denyCount} off` : "");
+}
+
+function joinSummaryParts(...parts: string[]): string {
+	return parts.filter(Boolean).join("/");
+}
+
 function visibleSkillCount(skills: Skill[], allowedSkills: Set<string>): number {
 	return configurableSkills(skills).filter((skill) => allowedSkills.has(skill.name)).length;
 }
@@ -679,8 +753,13 @@ function cleanConfig(config: PromptSectionsConfig): void {
 }
 
 function effectiveSections(cwd: string): SectionSettings {
-	const configs = loadScopedConfigs(cwd);
-	return { piDocumentation: resolveSection(configs, "piDocumentation") };
+	return resolvedSections(loadScopedConfigs(cwd));
+}
+
+function resolvedSections(configs: ScopedConfigs): SectionSettings {
+	return Object.fromEntries(
+		PROMPT_SECTION_DEFINITIONS.map((section) => [section.name, resolveSection(configs, section.name)]),
+	) as SectionSettings;
 }
 
 function loadScopedConfigs(cwd: string): ScopedConfigs {
@@ -772,6 +851,10 @@ function isRight(data: string): boolean {
 
 function isResetKey(data: string): boolean {
 	return data.toLowerCase() === "r";
+}
+
+function isPromptToggleKey(data: string): boolean {
+	return data.toLowerCase() === "p";
 }
 
 function scopeForKey(data: string): SettingsScope | undefined {
