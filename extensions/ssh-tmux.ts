@@ -17,7 +17,7 @@
  *   - base64
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
@@ -46,6 +46,7 @@ type SshTmuxConfig = {
 	remoteCwd: string;
 	session: string;
 	target: string;
+	shellIdleTimeoutSeconds: number;
 };
 
 type RunResult = {
@@ -54,6 +55,7 @@ type RunResult = {
 };
 
 const DEFAULT_SESSION = "pi-ssh-tmux";
+const DEFAULT_SHELL_IDLE_TIMEOUT_SECONDS = 24 * 60 * 60;
 const POLL_INTERVAL_MS = 120;
 
 function shQuote(value: string): string {
@@ -80,6 +82,13 @@ function oneLine(value: string, max = 240): string {
 
 function audit(kind: string, detail: string): string {
 	return `[pi ${kind}] ${oneLine(detail)}`;
+}
+
+function parseNonNegativeInteger(value: unknown, defaultValue: number): number {
+	if (value === undefined || value === null || value === "") return defaultValue;
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed) || parsed < 0) return defaultValue;
+	return Math.floor(parsed);
 }
 
 function sshExec(remote: string, command: string, input?: Buffer | string): Promise<Buffer> {
@@ -129,13 +138,26 @@ async function resolveRemoteCwd(remote: string, requested?: string): Promise<str
 class SshTmuxSession {
 	private ready = false;
 	private queue: Promise<unknown> = Promise.resolve();
+	private humanEchoLikelyOn = false;
 
 	constructor(private readonly config: SshTmuxConfig) {}
 
-	async ensure(): Promise<void> {
-		if (this.ready) return;
+	isHumanEchoLikelyOn(): boolean {
+		return this.humanEchoLikelyOn;
+	}
 
-		const { remote, remoteCwd, session, target } = this.config;
+	markHumanEchoLikelyOn(): void {
+		this.humanEchoLikelyOn = true;
+	}
+
+	async ensure(): Promise<void> {
+		const { remote, remoteCwd, session, target, shellIdleTimeoutSeconds } = this.config;
+		if (this.ready) {
+			const hasSession = await sshExec(remote, `tmux has-session -t ${shQuote(session)} 2>/dev/null && echo yes || echo no`).catch(() => Buffer.from("no"));
+			if (hasSession.toString().trim() === "yes") return;
+			this.ready = false;
+		}
+
 		await sshExec(remote, "command -v tmux >/dev/null || { echo 'Remote requirement missing: tmux. Install tmux on the remote host.' >&2; exit 127; }");
 		await sshExec(remote, "command -v bash >/dev/null || { echo 'Remote requirement missing: bash.' >&2; exit 127; }");
 		await sshExec(remote, "command -v base64 >/dev/null || { echo 'Remote requirement missing: base64.' >&2; exit 127; }");
@@ -150,8 +172,11 @@ class SshTmuxSession {
 		await sshExec(remote, `tmux set-option -t ${shQuote(session)} history-limit 200000 >/dev/null`);
 		await sshExec(remote, `tmux resize-window -t ${shQuote(target)} -x 1000 -y 60 >/dev/null 2>&1 || true`);
 
+		const timeoutSetup = shellIdleTimeoutSeconds > 0 ? `export TMOUT=${shellIdleTimeoutSeconds}` : "unset TMOUT";
+
 		// Quiet the pane so pasted commands are not echoed into captured output.
-		await this.pasteToPane(`stty -echo 2>/dev/null || true\nexport PS1='[pi-ssh-tmux]$ '\nprintf '[pi init] cwd=%s\\n' ${shQuote(remoteCwd)}\ncd ${shQuote(remoteCwd)}\n`);
+		await this.pasteToPane(`stty -echo 2>/dev/null || true\nexport PS1='[pi-ssh-tmux]$ '\n${timeoutSetup}\nprintf '[pi init] cwd=%s shell_idle_timeout=%s\\n' ${shQuote(remoteCwd)} ${shQuote(String(shellIdleTimeoutSeconds))}\ncd ${shQuote(remoteCwd)}\n`);
+		this.humanEchoLikelyOn = false;
 		await sleep(150);
 		this.ready = true;
 	}
@@ -194,7 +219,12 @@ class SshTmuxSession {
 			"",
 		].join("\n");
 
-		const auditedPaste = audit ? `printf '%s\\n' ${shQuote(audit)}\n${paste}` : paste;
+		// If the user attached and left echo enabled, turn it off before pasting any
+		// internal payload. The clear-line escape hides this one setup line in normal
+		// terminals, avoiding large echoed heredocs/base64 while keeping attach simple.
+		const quietPrefix = "stty -echo 2>/dev/null || true; printf '\\r\\033[K'\n";
+		const auditedPaste = `${quietPrefix}${audit ? `printf '%s\\n' ${shQuote(audit)}\n` : ""}${paste}`;
+		this.humanEchoLikelyOn = false;
 		await this.pasteToPane(auditedPaste);
 
 		let lastStreamed = 0;
@@ -480,6 +510,10 @@ function createRemoteGrepTool(session: SshTmuxSession, remoteCwd: string, localC
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("ssh-tmux", { description: "SSH tmux remote: user@host or user@host:/path", type: "string" });
+	pi.registerFlag("ssh-tmux-shell-timeout", {
+		description: "Seconds of idle shell time before the remote tmux shell exits (default: 86400, 0 disables)",
+		type: "string",
+	});
 
 	const localCwd = process.cwd();
 	const localRead = createReadTool(localCwd);
@@ -556,12 +590,63 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("ssh-tmux-attach", {
+		description: "Suspend Pi and attach this terminal to the remote SSH tmux session",
+		handler: async (_args, ctx) => {
+			const remote = getRemote();
+			if (!remote) {
+				ctx.ui.notify("No --ssh-tmux session is active", "warning");
+				return;
+			}
+			if (!ctx.hasUI) {
+				ctx.ui.notify("/ssh-tmux-attach requires interactive mode", "warning");
+				return;
+			}
+
+			await ctx.waitForIdle();
+			await remote.session.ensure();
+
+			const { config } = remote;
+			const sendTmuxCommand = (command: string) =>
+				sshExec(config.remote, `tmux send-keys -t ${shQuote(config.session)} ${shQuote(command)} C-m`);
+
+			// Make the pane feel normal while the user is attached. We intentionally leave
+			// echo enabled after detach; the next Pi tool execution turns it off before
+			// pasting internal payloads. This avoids the visible post-detach `stty -echo`
+			// command and stops the attach flow from fighting tmux/shell state.
+			if (!remote.session.isHumanEchoLikelyOn()) {
+				await sendTmuxCommand("stty echo 2>/dev/null || true; export PS1='[pi-ssh-tmux]$ '").catch(() => {});
+				await sleep(150);
+			}
+
+			const exitCode = await ctx.ui.custom<number | null>((tui, _theme, _kb, done) => {
+				tui.stop();
+				process.stdout.write("\x1b[2J\x1b[H");
+				process.stdout.write(`Attaching to ${config.remote} tmux session ${config.session}. Detach with Ctrl-b then d (not Ctrl-d).\n\n`);
+				const result = spawnSync("ssh", ["-tt", config.remote, `tmux attach -t ${shQuote(config.session)}`], {
+					stdio: "inherit",
+					env: process.env,
+				});
+				tui.start();
+				tui.requestRender(true);
+				done(result.status);
+				return { render: () => [], invalidate: () => {} };
+			});
+
+			remote.session.markHumanEchoLikelyOn();
+
+			if (exitCode === 0) ctx.ui.notify("Returned from SSH tmux session", "info");
+			else ctx.ui.notify(`SSH tmux attach exited with code ${exitCode ?? "unknown"}`, "warning");
+		},
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		const arg = pi.getFlag("ssh-tmux") as string | undefined;
 		if (!arg) return;
 
 		const parsed = parseSshTmuxArg(arg);
 		const remoteCwd = await resolveRemoteCwd(parsed.remote, parsed.remoteCwd);
+		const shellIdleTimeoutSeconds = parseNonNegativeInteger(pi.getFlag("ssh-tmux-shell-timeout"), DEFAULT_SHELL_IDLE_TIMEOUT_SECONDS);
 		const config: SshTmuxConfig = {
 			remote: parsed.remote,
 			remoteCwd,
@@ -569,6 +654,7 @@ export default function (pi: ExtensionAPI) {
 			// Target the active pane in the session. This avoids assuming tmux window/pane
 			// base indexes are 0; user configs often set them to 1.
 			target: DEFAULT_SESSION,
+			shellIdleTimeoutSeconds,
 		};
 		const session = new SshTmuxSession(config);
 		await session.ensure();
