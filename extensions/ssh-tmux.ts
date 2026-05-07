@@ -182,7 +182,7 @@ class SshTmuxSession {
 		const timeoutSetup = shellIdleTimeoutSeconds > 0 ? `export TMOUT=${shellIdleTimeoutSeconds}` : "unset TMOUT";
 
 		// Quiet the pane so pasted commands are not echoed into captured output.
-		await this.pasteToPane(`stty -echo\nexport PS1='[pi-ssh-tmux]$ '\n${timeoutSetup}\nprintf '[pi init] cwd=%s shell_idle_timeout=%s\\n' ${shQuote(remoteCwd)} ${shQuote(String(shellIdleTimeoutSeconds))}\ncd ${shQuote(remoteCwd)}\n`);
+		await this.pasteToPane(`stty -echo\nexport PS1='[pi-ssh-tmux]$ '\n${timeoutSetup}\ncd ${shQuote(remoteCwd)}\n`);
 		await sleep(150);
 		this.ready = true;
 	}
