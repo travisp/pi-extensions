@@ -1,17 +1,56 @@
 # pi-ssh-tmux
 
-Pi extension for routing tool execution to a remote host through a persistent `tmux` session over SSH.
+Pi extension for routing Pi tool execution to a remote host through a persistent single-pane `tmux` session over SSH.
+
+## Usage
 
 ```bash
 pi -e /path/to/pi-ssh-tmux --ssh-tmux user@host:/remote/workdir
 pi -e /path/to/pi-ssh-tmux --ssh-tmux user@host
 ```
 
-The extension overrides `read`, `write`, `edit`, `bash`, `ls`, `find`, and `grep` so operations execute inside a remote `tmux` pane named `pi-ssh-tmux`.
+The extension creates or reuses a remote tmux session named `pi-ssh-tmux`. If no remote path is provided, it uses the remote login directory.
+
+## What runs remotely
+
+The extension overrides these Pi tools so they execute against the remote tmux session:
+
+- `read`
+- `write`
+- `edit`
+- `bash`
+- `ls`
+- `find`
+- `grep`
+
+User `!` bash commands are also routed through the same remote tmux session.
 
 During normal Pi tool execution, the tmux pane keeps shell echo disabled for reliable command framing, but prints human-readable audit lines like `[pi bash] ...`, `[pi read] ...`, and `[pi write] ...` so you can review what Pi is doing without dumping internal base64 payloads into scrollback.
 
-By default, the remote bash shell sets `TMOUT=86400`, so an idle tmux shell exits after about one day. Override with `--ssh-tmux-shell-timeout <seconds>` or use `--ssh-tmux-shell-timeout 0` to disable the shell idle timeout.
+## Flags
+
+```text
+--ssh-tmux user@host[:/remote/path]
+    Enable remote execution through SSH + tmux.
+
+--ssh-tmux-shell-timeout <seconds>
+    Idle timeout for the remote bash shell. Default: 86400 seconds (one day).
+    Use 0 to disable the shell idle timeout.
+```
+
+The shell timeout is implemented with bash `TMOUT`, so it applies when the shell is idle at a prompt, whether attached or detached. It does not kill a currently running command.
+
+## Slash commands
+
+```text
+/ssh-tmux-attach
+    Suspend Pi and attach this terminal to the remote tmux session.
+    Detach with Ctrl-b then plain d to return to Pi.
+
+/ssh-tmux-kill
+    Kill the remote tmux session used by this extension.
+    The next Pi tool call recreates it if --ssh-tmux is still active.
+```
 
 ## On-demand sudo
 
@@ -21,24 +60,52 @@ Attach to the same remote tmux session from inside Pi:
 /ssh-tmux-attach
 ```
 
-Pi suspends while you are attached. The extension enables terminal echo for the human attach session and leaves it on after you detach. The next Pi tool execution disables echo again before sending internal payloads. Detach with `Ctrl-b` then plain `d` to return to Pi. Do not press `Ctrl-d`; that can close the shell and kill the tmux session.
+Pi suspends while you are attached. The extension enables terminal echo for the human attach session and leaves it on after you detach. The next Pi tool execution disables echo again before sending internal payloads.
 
-Or attach from another terminal:
-
-```bash
-ssh -tt user@host 'tmux attach -t pi-ssh-tmux'
-```
-
-Run:
+While attached, run:
 
 ```bash
 sudo -v
 ```
 
-Enter your password, then detach with `Ctrl-b` then plain `d`. While sudo's timestamp is valid, Pi can run `sudo -n ...` inside that same tmux session. To lock it again:
+Enter your password, then detach with:
+
+```text
+Ctrl-b d
+```
+
+While sudo's timestamp is valid, Pi can run `sudo -n ...` inside that same tmux session. To lock sudo again, attach and run:
 
 ```bash
 sudo -k
 ```
 
+Do not press `Ctrl-d` unless you intentionally want to exit the shell; it can close the only pane and end the tmux session.
+
 No sudo password is passed through Pi or the model.
+
+## Manual tmux access
+
+You can also attach from another terminal:
+
+```bash
+ssh -tt user@host 'tmux attach -t pi-ssh-tmux'
+```
+
+List or kill the session manually:
+
+```bash
+ssh user@host 'tmux ls'
+ssh user@host 'tmux kill-session -t pi-ssh-tmux'
+```
+
+## Lifecycle
+
+By default, the remote tmux session persists when Pi exits or crashes. This is intentional: it lets remote work survive local connection problems and lets you reconnect to inspect the session.
+
+Cleanup options:
+
+- wait for the shell idle timeout, default one day
+- run `/ssh-tmux-kill` inside Pi
+- manually run `tmux kill-session -t pi-ssh-tmux` on the remote
+- disable the timeout with `--ssh-tmux-shell-timeout 0` if you want indefinite persistence

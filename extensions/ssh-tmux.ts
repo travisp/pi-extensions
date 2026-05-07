@@ -150,6 +150,11 @@ class SshTmuxSession {
 		this.humanEchoLikelyOn = true;
 	}
 
+	markNotReady(): void {
+		this.ready = false;
+		this.humanEchoLikelyOn = false;
+	}
+
 	async ensure(): Promise<void> {
 		const { remote, remoteCwd, session, target, shellIdleTimeoutSeconds } = this.config;
 		if (this.ready) {
@@ -637,6 +642,24 @@ export default function (pi: ExtensionAPI) {
 
 			if (exitCode === 0) ctx.ui.notify("Returned from SSH tmux session", "info");
 			else ctx.ui.notify(`SSH tmux attach exited with code ${exitCode ?? "unknown"}`, "warning");
+		},
+	});
+
+	pi.registerCommand("ssh-tmux-kill", {
+		description: "Kill the remote SSH tmux session used by this extension",
+		handler: async (_args, ctx) => {
+			const remote = getRemote();
+			if (!remote) {
+				ctx.ui.notify("No --ssh-tmux session is active", "warning");
+				return;
+			}
+
+			await ctx.waitForIdle();
+			const { config } = remote;
+			await sshExec(config.remote, `tmux kill-session -t ${shQuote(config.session)} 2>/dev/null || true`);
+			remote.session.markNotReady();
+			ctx.ui.notify(`Killed SSH tmux session ${config.session} on ${config.remote}`, "info");
+			ctx.ui.setStatus("ssh-tmux", ctx.ui.theme.fg("warning", `SSH tmux killed: ${config.remote}:${config.remoteCwd}`));
 		},
 	});
 
