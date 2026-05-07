@@ -208,9 +208,8 @@ async function showSettings(ctx: ExtensionCommandContext, pi: Pick<ExtensionAPI,
 	latestAppendScope = resources.appendScope;
 
 	const currentSystemPrompt = ctx.getSystemPrompt();
-	const currentPromptSections = splitSystemPrompt(currentSystemPrompt, latestAppendSystemPrompt);
 	let basePrompt = latestBaseSystemPrompt;
-	if (!basePrompt || currentPromptSections.some((section) => section.name === "piDocumentation")) {
+	if (!basePrompt) {
 		basePrompt = currentSystemPrompt;
 		latestBaseSystemPrompt = basePrompt;
 	}
