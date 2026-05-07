@@ -468,6 +468,49 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerTool({
+		...localRead,
+		name: "local_read",
+		label: "Local Read",
+		description: "Read a file from the local machine running Pi, bypassing SSH tmux remote routing.",
+		promptSnippet: "Read a file from the local machine running Pi, not the SSH tmux remote.",
+		async execute(id, params, signal, onUpdate) {
+			return localRead.execute(id, params, signal, onUpdate);
+		},
+	});
+
+	pi.registerTool({
+		...localWrite,
+		name: "local_write",
+		label: "Local Write",
+		description: "Write a file on the local machine running Pi, bypassing SSH tmux remote routing.",
+		promptSnippet: "Write a file on the local machine running Pi, not the SSH tmux remote.",
+		async execute(id, params, signal, onUpdate) {
+			return localWrite.execute(id, params, signal, onUpdate);
+		},
+	});
+
+	pi.registerTool({
+		...localEdit,
+		name: "local_edit",
+		label: "Local Edit",
+		description: "Edit a file on the local machine running Pi, bypassing SSH tmux remote routing.",
+		promptSnippet: "Edit a file on the local machine running Pi, not the SSH tmux remote.",
+		async execute(id, params, signal, onUpdate) {
+			return localEdit.execute(id, params, signal, onUpdate);
+		},
+	});
+
+	pi.registerTool({
+		...localBash,
+		name: "local_bash",
+		label: "Local Bash",
+		description: "Run a shell command on the local machine running Pi, bypassing SSH tmux remote routing.",
+		promptSnippet: "Run a shell command on the local machine running Pi, not the SSH tmux remote.",
+		async execute(id, params, signal, onUpdate) {
+			return localBash.execute(id, params, signal, onUpdate);
+		},
+	});
 
 	pi.registerCommand("ssh-tmux-attach", {
 		description: "Suspend Pi and attach this terminal to the remote SSH tmux session",
@@ -556,6 +599,7 @@ export default function (pi: ExtensionAPI) {
 		const sudoHint = [
 			"Remote execution is running through a persistent SSH tmux session.",
 			`Current working directory: ${config.remoteCwd} (via SSH tmux: ${config.remote}, session ${config.session})`,
+			"The normal read/write/edit/bash tools run on the SSH tmux remote; use local_read/local_write/local_edit/local_bash only for files or commands on the local machine running Pi.",
 			"If privileged access is needed, use `sudo -n` so commands fail instead of prompting.",
 			"The user can unlock sudo outside Pi by attaching to the same tmux session, running `sudo -v`, then detaching.",
 		].join("\n");

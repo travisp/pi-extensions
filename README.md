@@ -30,6 +30,15 @@ The extension overrides these Pi tools so they execute against the remote tmux s
 
 User `!` bash commands are also routed through the same remote tmux session.
 
+The extension also registers explicit local escape-hatch tools that call Pi's original local implementations:
+
+- `local_read`
+- `local_write`
+- `local_edit`
+- `local_bash`
+
+Use these for local Pi infrastructure, such as scripts under `~/.pi/agent/skills`.
+
 During normal Pi tool execution, the tmux pane keeps shell echo disabled for reliable command framing, but prints human-readable audit lines like `[pi bash] ...`, `[pi read] ...`, and `[pi write] ...` so you can review what Pi is doing without dumping internal base64 payloads into scrollback.
 
 ## Flags
