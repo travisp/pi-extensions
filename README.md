@@ -7,9 +7,10 @@ Pi extension for routing Pi tool execution to a remote host through a persistent
 ```bash
 pi -e /path/to/pi-ssh-tmux --ssh-tmux user@host:/remote/workdir
 pi -e /path/to/pi-ssh-tmux --ssh-tmux user@host
+pi -e /path/to/pi-ssh-tmux --ssh-tmux user@host --tmux-name pi-work
 ```
 
-The extension creates or reuses a remote tmux session named `pi-ssh-tmux`. If no remote path is provided, it uses the remote login directory.
+The extension creates or reuses a remote tmux session named `pi-ssh-tmux` by default. Use `--tmux-name` to choose a different session. If no remote path is provided, it uses the remote login directory.
 
 ## Remote requirements
 
@@ -46,6 +47,9 @@ During normal Pi tool execution, the tmux pane keeps shell echo disabled for rel
 ```text
 --ssh-tmux user@host[:/remote/path]
     Enable remote execution through SSH + tmux.
+
+--tmux-name <session-name>
+    Remote tmux session name. Default: pi-ssh-tmux.
 
 --ssh-tmux-shell-timeout <seconds>
     Idle timeout for the remote bash shell. Default: 86400 seconds (one day).
@@ -104,6 +108,8 @@ You can also attach from another terminal:
 
 ```bash
 ssh -tt user@host 'tmux attach -t pi-ssh-tmux'
+# or, if you started Pi with --tmux-name pi-work:
+ssh -tt user@host 'tmux attach -t pi-work'
 ```
 
 List or kill the session manually:
@@ -121,5 +127,5 @@ Cleanup options:
 
 - wait for the shell idle timeout, default one day
 - run `/ssh-tmux-kill` inside Pi
-- manually run `tmux kill-session -t pi-ssh-tmux` on the remote
+- manually run `tmux kill-session -t pi-ssh-tmux` on the remote (replace the name if you used `--tmux-name`)
 - disable the timeout with `--ssh-tmux-shell-timeout 0` if you want indefinite persistence

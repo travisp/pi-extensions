@@ -9,6 +9,7 @@
  * Usage:
  *   pi -e ./pi-ssh-tmux --ssh-tmux user@host
  *   pi -e ./pi-ssh-tmux --ssh-tmux user@host:/remote/path
+ *   pi -e ./pi-ssh-tmux --ssh-tmux user@host --tmux-name pi-work
  *
  * Requirements on remote:
  *   - ssh key-based auth
@@ -104,6 +105,13 @@ function parseShellIdleTimeout(value: unknown): number {
 	const parsed = Number(value);
 	if (!Number.isInteger(parsed) || parsed < 0) throw new Error("--ssh-tmux-shell-timeout must be a non-negative integer");
 	return parsed;
+}
+
+function parseTmuxName(value: unknown): string {
+	if (value === undefined || value === null || value === "") return DEFAULT_SESSION;
+	if (typeof value !== "string") throw new Error("--tmux-name must be a string");
+	if (/[:\x00-\x1f\x7f]/.test(value)) throw new Error("--tmux-name must not contain ':' or control characters");
+	return value;
 }
 
 function sshExec(remote: string, command: string, input?: Buffer | string): Promise<Buffer> {
@@ -479,6 +487,7 @@ async function createRemoteState(config: SshTmuxConfig, localCwd: string): Promi
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("ssh-tmux", { description: "SSH tmux remote: user@host or user@host:/path", type: "string" });
+	pi.registerFlag("tmux-name", { description: "Remote tmux session name (default: pi-ssh-tmux)", type: "string" });
 	pi.registerFlag("ssh-tmux-shell-timeout", {
 		description: "Seconds of idle shell time before the remote tmux shell exits (default: 86400, 0 disables)",
 		type: "string",
@@ -646,7 +655,7 @@ export default function (pi: ExtensionAPI) {
 		const config: SshTmuxConfig = {
 			remote: parsed.remote,
 			remoteCwd,
-			session: DEFAULT_SESSION,
+			session: parseTmuxName(pi.getFlag("tmux-name")),
 			shellIdleTimeoutSeconds: parseShellIdleTimeout(pi.getFlag("ssh-tmux-shell-timeout")),
 		};
 		resolved = await createRemoteState(config, localCwd);
