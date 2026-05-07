@@ -1,6 +1,6 @@
 {
   "name": "pi-prompt-ninja",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension with tools for customizing the pi system prompt",
   "type": "module",
   "keywords": [
@@ -13,7 +13,7 @@
     ]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   }
 }

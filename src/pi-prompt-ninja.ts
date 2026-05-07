@@ -8,8 +8,8 @@ import {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type Skill,
-} from "@mariozechner/pi-coding-agent";
-import { getKeybindings, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import { getKeybindings, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 
 type SettingsScope = "session" | "directory" | "global";
 type CellState = "unset" | "on" | "off";
@@ -137,7 +137,7 @@ export default function promptSections(pi: ExtensionAPI) {
 
 function splitSystemPrompt(systemPrompt: string, appendSystemPrompt?: string): PromptSection[] {
 	const markers: SectionMarker[] = [];
-	addMarker(markers, systemPrompt, "tools", "Available tools:");
+	addMarker(markers, systemPrompt, "tools", ["# Tools\n", "## Tools\n", "Available tools:"]);
 	addMarker(markers, systemPrompt, "guidelines", "Guidelines:");
 	addMarker(markers, systemPrompt, "piDocumentation", "Pi documentation");
 	if (appendSystemPrompt) addMarker(markers, systemPrompt, "appendSection", appendSystemPrompt);
@@ -159,9 +159,10 @@ function splitSystemPrompt(systemPrompt: string, appendSystemPrompt?: string): P
 	}).filter((section) => section.text.trim().length > 0);
 }
 
-function addMarker(markers: SectionMarker[], text: string, name: PromptSectionName, marker: string): void {
-	const start = sectionStart(text, marker);
-	if (start !== -1) markers.push({ name, start });
+function addMarker(markers: SectionMarker[], text: string, name: PromptSectionName, marker: string | string[]): void {
+	const candidates = Array.isArray(marker) ? marker : [marker];
+	const starts = candidates.map((candidate) => sectionStart(text, candidate)).filter((start) => start !== -1);
+	if (starts.length > 0) markers.push({ name, start: Math.min(...starts) });
 }
 
 function sectionStart(text: string, marker: string): number {
