@@ -16,6 +16,7 @@
  *   - bash
  *   - base64
  *   - find
+ *   - file
  *   - ripgrep (rg) for grep/find tools
  */
 
@@ -54,6 +55,13 @@ type RunResult = {
 	exitCode: number | null;
 };
 
+type RunOptions = {
+	signal?: AbortSignal;
+	timeout?: number;
+	onData?: (data: Buffer) => void;
+	audit?: string;
+};
+
 const DEFAULT_SESSION = "pi-ssh-tmux";
 const DEFAULT_SHELL_IDLE_TIMEOUT_SECONDS = 24 * 60 * 60;
 const POLL_INTERVAL_MS = 120;
@@ -84,16 +92,21 @@ function audit(kind: string, detail: string): string {
 	return `[pi ${kind}] ${oneLine(detail)}`;
 }
 
-function parseNonNegativeInteger(value: unknown, defaultValue: number): number {
-	if (value === undefined || value === null || value === "") return defaultValue;
+function escapeRegex(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function parseShellIdleTimeout(value: unknown): number {
+	if (value === undefined || value === null || value === "") return DEFAULT_SHELL_IDLE_TIMEOUT_SECONDS;
 	const parsed = Number(value);
-	if (!Number.isFinite(parsed) || parsed < 0) return defaultValue;
-	return Math.floor(parsed);
+	if (!Number.isInteger(parsed) || parsed < 0) throw new Error("--ssh-tmux-shell-timeout must be a non-negative integer");
+	return parsed;
 }
 
 function sshExec(remote: string, command: string, input?: Buffer | string): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
-		const child = spawn("ssh", [remote, command], { stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+		const stdin = input === undefined ? "ignore" : "pipe";
+		const child = spawn("ssh", [remote, command], { stdio: [stdin, "pipe", "pipe"] });
 		const chunks: Buffer[] = [];
 		const errChunks: Buffer[] = [];
 		child.stdout.on("data", (data) => chunks.push(Buffer.from(data)));
@@ -138,36 +151,32 @@ async function resolveRemoteCwd(remote: string, requested?: string): Promise<str
 class SshTmuxSession {
 	private ready = false;
 	private queue: Promise<unknown> = Promise.resolve();
-	private humanEchoLikelyOn = false;
 
 	constructor(private readonly config: SshTmuxConfig) {}
 
-	isHumanEchoLikelyOn(): boolean {
-		return this.humanEchoLikelyOn;
-	}
-
-	markHumanEchoLikelyOn(): void {
-		this.humanEchoLikelyOn = true;
-	}
-
 	markNotReady(): void {
 		this.ready = false;
-		this.humanEchoLikelyOn = false;
 	}
 
 	async ensure(): Promise<void> {
 		const { remote, remoteCwd, session, shellIdleTimeoutSeconds } = this.config;
 		if (this.ready) {
-			const hasSession = await sshExec(remote, `tmux has-session -t ${shQuote(session)} 2>/dev/null && echo yes || echo no`).catch(() => Buffer.from("no"));
+			const hasSession = await sshExec(remote, `tmux has-session -t ${shQuote(session)} 2>/dev/null && echo yes || echo no`);
 			if (hasSession.toString().trim() === "yes") return;
 			this.ready = false;
 		}
 
-		await sshExec(remote, "command -v tmux >/dev/null || { echo 'Remote requirement missing: tmux. Install tmux on the remote host.' >&2; exit 127; }");
-		await sshExec(remote, "command -v bash >/dev/null || { echo 'Remote requirement missing: bash.' >&2; exit 127; }");
-		await sshExec(remote, "command -v base64 >/dev/null || { echo 'Remote requirement missing: base64.' >&2; exit 127; }");
-		await sshExec(remote, "command -v find >/dev/null || { echo 'Remote requirement missing: find.' >&2; exit 127; }");
-		await sshExec(remote, "command -v rg >/dev/null || { echo 'Remote requirement missing: ripgrep (rg).' >&2; exit 127; }");
+		const requirements = [
+			["tmux", "tmux. Install tmux on the remote host."],
+			["bash", "bash."],
+			["base64", "base64."],
+			["find", "find."],
+			["file", "file."],
+			["rg", "ripgrep (rg)."],
+		];
+		for (const [binary, message] of requirements) {
+			await sshExec(remote, `command -v ${binary} >/dev/null || { echo ${shQuote(`Remote requirement missing: ${message}`)} >&2; exit 127; }`);
+		}
 		await sshExec(remote, `mkdir -p ${shQuote(remoteCwd)}`);
 
 		const create = [
@@ -177,28 +186,24 @@ class SshTmuxSession {
 		].join(" ");
 		await sshExec(remote, create);
 		await sshExec(remote, `tmux set-option -t ${shQuote(session)} history-limit 200000 >/dev/null`);
-		await sshExec(remote, `tmux resize-window -t ${shQuote(session)} -x 1000 -y 60 >/dev/null 2>&1 || true`);
+		await sshExec(remote, `tmux resize-window -t ${shQuote(session)} -x 1000 -y 60 >/dev/null`);
 
 		const timeoutSetup = shellIdleTimeoutSeconds > 0 ? `export TMOUT=${shellIdleTimeoutSeconds}` : "unset TMOUT";
 
 		// Quiet the pane so pasted commands are not echoed into captured output.
-		await this.pasteToPane(`stty -echo 2>/dev/null || true\nexport PS1='[pi-ssh-tmux]$ '\n${timeoutSetup}\nprintf '[pi init] cwd=%s shell_idle_timeout=%s\\n' ${shQuote(remoteCwd)} ${shQuote(String(shellIdleTimeoutSeconds))}\ncd ${shQuote(remoteCwd)}\n`);
-		this.humanEchoLikelyOn = false;
+		await this.pasteToPane(`stty -echo\nexport PS1='[pi-ssh-tmux]$ '\n${timeoutSetup}\nprintf '[pi init] cwd=%s shell_idle_timeout=%s\\n' ${shQuote(remoteCwd)} ${shQuote(String(shellIdleTimeoutSeconds))}\ncd ${shQuote(remoteCwd)}\n`);
 		await sleep(150);
 		this.ready = true;
 	}
 
-	async run(script: string, options: { signal?: AbortSignal; timeout?: number; onData?: (data: Buffer) => void; audit?: string } = {}): Promise<RunResult> {
+	async run(script: string, options: RunOptions = {}): Promise<RunResult> {
 		const runQueued = async () => this.runUnqueued(script, options);
 		const result = this.queue.then(runQueued, runQueued);
 		this.queue = result.catch(() => {});
 		return result;
 	}
 
-	private async runUnqueued(
-		script: string,
-		{ signal, timeout, onData, audit }: { signal?: AbortSignal; timeout?: number; onData?: (data: Buffer) => void; audit?: string },
-	): Promise<RunResult> {
+	private async runUnqueued(script: string, { signal, timeout, onData, audit }: RunOptions): Promise<RunResult> {
 		await this.ensure();
 		if (signal?.aborted) throw new Error("aborted");
 
@@ -229,23 +234,20 @@ class SshTmuxSession {
 		// If the user attached and left echo enabled, turn it off before pasting any
 		// internal payload. The clear-line escape hides this one setup line in normal
 		// terminals, avoiding large echoed heredocs/base64 while keeping attach simple.
-		const quietPrefix = "stty -echo 2>/dev/null || true; printf '\\r\\033[K'\n";
+		const quietPrefix = "stty -echo; printf '\\r\\033[K'\n";
 		const auditedPaste = `${quietPrefix}${audit ? `printf '%s\\n' ${shQuote(audit)}\n` : ""}${paste}`;
-		this.humanEchoLikelyOn = false;
 		await this.pasteToPane(auditedPaste);
 
 		let lastStreamed = 0;
 		const started = Date.now();
-		let abortRequested = false;
 		const onAbort = () => {
-			abortRequested = true;
 			void this.sendKeys("C-c").catch(() => {});
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 
 		try {
 			while (true) {
-				if (abortRequested || signal?.aborted) return { output: Buffer.alloc(0), exitCode: null };
+				if (signal?.aborted) return { output: Buffer.alloc(0), exitCode: null };
 				if (timeout && Date.now() - started > timeout * 1000) {
 					await this.sendKeys("C-c").catch(() => {});
 					throw new Error(`timeout:${timeout}`);
@@ -263,8 +265,8 @@ class SshTmuxSession {
 						lastStreamed = current.length;
 					}
 					if (endIndex >= 0) {
-						const endLine = captured.slice(endIndex).split("\n", 1)[0] ?? "";
-						const match = endLine.match(new RegExp(`^${end.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}:(-?\\d+)`));
+						const endLine = captured.slice(endIndex).split("\n", 1)[0];
+						const match = endLine.match(new RegExp(`^${escapeRegex(end)}:(-?\\d+)`));
 						const exitCode = match ? Number(match[1]) : null;
 						return { output: Buffer.from(current.replace(/\n$/, ""), "utf8"), exitCode };
 					}
@@ -305,6 +307,16 @@ function createPathMapper(localCwd: string, remoteCwd: string): (p: string) => s
 	};
 }
 
+type RemoteContext = {
+	session: SshTmuxSession;
+	localCwd: string;
+	toRemote: (p: string) => string;
+};
+
+function createRemoteContext(session: SshTmuxSession, remoteCwd: string, localCwd: string): RemoteContext {
+	return { session, localCwd, toRemote: createPathMapper(localCwd, remoteCwd) };
+}
+
 function requireOk(result: RunResult, action: string): Buffer {
 	if (result.exitCode !== 0) {
 		const output = result.output.toString("utf8").trim();
@@ -313,8 +325,7 @@ function requireOk(result: RunResult, action: string): Buffer {
 	return result.output;
 }
 
-function createRemoteReadOps(session: SshTmuxSession, remoteCwd: string, localCwd: string): ReadOperations {
-	const toRemote = createPathMapper(localCwd, remoteCwd);
+function createRemoteReadOps({ session, toRemote }: RemoteContext): ReadOperations {
 	return {
 		readFile: async (p) => {
 			const remotePath = toRemote(p);
@@ -331,23 +342,18 @@ function createRemoteReadOps(session: SshTmuxSession, remoteCwd: string, localCw
 		},
 		detectImageMimeType: async (p) => {
 			const remotePath = toRemote(p);
-			try {
-				const out = requireOk(
-					await session.run(`p=${shQuote(remotePath)}\nif test -r "$p"; then file --mime-type -b "$p"; else sudo -n file --mime-type -b "$p"; fi`),
-					`mime ${remotePath}`,
-				)
-					.toString("utf8")
-					.trim();
-				return ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(out) ? out : null;
-			} catch {
-				return null;
-			}
+			const out = requireOk(
+				await session.run(`p=${shQuote(remotePath)}\nif test -r "$p"; then file --mime-type -b "$p"; else sudo -n file --mime-type -b "$p"; fi`),
+				`mime ${remotePath}`,
+			)
+				.toString("utf8")
+				.trim();
+			return ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(out) ? out : null;
 		},
 	};
 }
 
-function createRemoteWriteOps(session: SshTmuxSession, remoteCwd: string, localCwd: string): WriteOperations {
-	const toRemote = createPathMapper(localCwd, remoteCwd);
+function createRemoteWriteOps({ session, toRemote }: RemoteContext): WriteOperations {
 	return {
 		writeFile: async (p, content) => {
 			const remotePath = toRemote(p);
@@ -377,10 +383,10 @@ function createRemoteWriteOps(session: SshTmuxSession, remoteCwd: string, localC
 	};
 }
 
-function createRemoteEditOps(session: SshTmuxSession, remoteCwd: string, localCwd: string): EditOperations {
-	const read = createRemoteReadOps(session, remoteCwd, localCwd);
-	const write = createRemoteWriteOps(session, remoteCwd, localCwd);
-	const toRemote = createPathMapper(localCwd, remoteCwd);
+function createRemoteEditOps(context: RemoteContext): EditOperations {
+	const read = createRemoteReadOps(context);
+	const write = createRemoteWriteOps(context);
+	const { session, toRemote } = context;
 	return {
 		readFile: read.readFile,
 		writeFile: write.writeFile,
@@ -394,8 +400,7 @@ function createRemoteEditOps(session: SshTmuxSession, remoteCwd: string, localCw
 	};
 }
 
-function createRemoteBashOps(session: SshTmuxSession, remoteCwd: string, localCwd: string): BashOperations {
-	const toRemote = createPathMapper(localCwd, remoteCwd);
+function createRemoteBashOps({ session, toRemote }: RemoteContext): BashOperations {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout }) => {
 			const remoteCwdForCommand = toRemote(cwd);
@@ -406,8 +411,7 @@ function createRemoteBashOps(session: SshTmuxSession, remoteCwd: string, localCw
 	};
 }
 
-function createRemoteLsOps(session: SshTmuxSession, remoteCwd: string, localCwd: string): LsOperations {
-	const toRemote = createPathMapper(localCwd, remoteCwd);
+function createRemoteLsOps({ session, toRemote }: RemoteContext): LsOperations {
 	return {
 		exists: async (p) => (await session.run(`test -e ${shQuote(toRemote(p))}`)).exitCode === 0,
 		stat: async (p) => {
@@ -426,8 +430,7 @@ function createRemoteLsOps(session: SshTmuxSession, remoteCwd: string, localCwd:
 	};
 }
 
-function createRemoteFindOps(session: SshTmuxSession, remoteCwd: string, localCwd: string): FindOperations {
-	const toRemote = createPathMapper(localCwd, remoteCwd);
+function createRemoteFindOps({ session, toRemote }: RemoteContext): FindOperations {
 	return {
 		exists: async (p) => (await session.run(`test -e ${shQuote(toRemote(p))}`)).exitCode === 0,
 		glob: async (pattern, cwd, { limit }) => {
@@ -453,8 +456,7 @@ type RemoteGrepParams = {
 	limit?: number;
 };
 
-async function runRemoteGrep(session: SshTmuxSession, remoteCwd: string, localCwd: string, params: RemoteGrepParams, signal?: AbortSignal) {
-	const toRemote = createPathMapper(localCwd, remoteCwd);
+async function runRemoteGrep({ session, localCwd, toRemote }: RemoteContext, params: RemoteGrepParams, signal?: AbortSignal) {
 	const searchPath = toRemote(path.resolve(localCwd, params.path || "."));
 	const effectiveLimit = Math.max(1, params.limit ?? 100);
 	const rgArgs = ["--line-number", "--color=never", "--hidden"];
@@ -475,15 +477,15 @@ async function runRemoteGrep(session: SshTmuxSession, remoteCwd: string, localCw
 	if (result.exitCode !== 0) throw new Error(result.output.toString("utf8") || `grep failed (${result.exitCode})`);
 
 	let lines = result.output.toString("utf8").split("\n").filter(Boolean);
-	const matchLimitReached = lines.length > effectiveLimit ? effectiveLimit : undefined;
-	if (matchLimitReached) lines = lines.slice(0, effectiveLimit);
+	const hitMatchLimit = lines.length > effectiveLimit;
+	if (hitMatchLimit) lines = lines.slice(0, effectiveLimit);
 	if (lines.length === 0) return { content: [{ type: "text" as const, text: "No matches found" }], details: undefined };
 
 	const truncation = truncateHead(lines.join("\n"), { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
 	let text = truncation.content;
 	const notices: string[] = [];
 	const details: { truncation?: unknown; matchLimitReached?: number } = {};
-	if (matchLimitReached) {
+	if (hitMatchLimit) {
 		notices.push(`${effectiveLimit} matches limit reached`);
 		details.matchLimitReached = effectiveLimit;
 	}
@@ -493,6 +495,34 @@ async function runRemoteGrep(session: SshTmuxSession, remoteCwd: string, localCw
 	}
 	if (notices.length) text += `\n\n[${notices.join(". ")}]`;
 	return { content: [{ type: "text" as const, text }], details: Object.keys(details).length ? details : undefined };
+}
+
+type RemoteState = {
+	config: SshTmuxConfig;
+	context: RemoteContext;
+	readTool: ReturnType<typeof createReadTool>;
+	writeTool: ReturnType<typeof createWriteTool>;
+	editTool: ReturnType<typeof createEditTool>;
+	bashTool: ReturnType<typeof createBashTool>;
+	lsTool: ReturnType<typeof createLsTool>;
+	findTool: ReturnType<typeof createFindTool>;
+};
+
+async function createRemoteState(config: SshTmuxConfig, localCwd: string): Promise<RemoteState> {
+	const session = new SshTmuxSession(config);
+	await session.ensure();
+
+	const context = createRemoteContext(session, config.remoteCwd, localCwd);
+	return {
+		config,
+		context,
+		readTool: createReadTool(localCwd, { operations: createRemoteReadOps(context) }),
+		writeTool: createWriteTool(localCwd, { operations: createRemoteWriteOps(context) }),
+		editTool: createEditTool(localCwd, { operations: createRemoteEditOps(context) }),
+		bashTool: createBashTool(localCwd, { operations: createRemoteBashOps(context) }),
+		lsTool: createLsTool(localCwd, { operations: createRemoteLsOps(context) }),
+		findTool: createFindTool(localCwd, { operations: createRemoteFindOps(context) }),
+	};
 }
 
 export default function (pi: ExtensionAPI) {
@@ -510,68 +540,61 @@ export default function (pi: ExtensionAPI) {
 	const localLs = createLsTool(localCwd);
 	const localFind = createFindTool(localCwd);
 	const localGrep = createGrepTool(localCwd);
-	let resolved: { config: SshTmuxConfig; session: SshTmuxSession } | null = null;
+	let resolved: RemoteState | null = null;
 
 	pi.registerTool({
 		...localRead,
 		async execute(id, params, signal, onUpdate) {
-			const remote = resolved;
-			if (!remote) return localRead.execute(id, params, signal, onUpdate);
-			return createReadTool(localCwd, { operations: createRemoteReadOps(remote.session, remote.config.remoteCwd, localCwd) }).execute(id, params, signal, onUpdate);
+			const tool = resolved?.readTool ?? localRead;
+			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
 
 	pi.registerTool({
 		...localWrite,
 		async execute(id, params, signal, onUpdate) {
-			const remote = resolved;
-			if (!remote) return localWrite.execute(id, params, signal, onUpdate);
-			return createWriteTool(localCwd, { operations: createRemoteWriteOps(remote.session, remote.config.remoteCwd, localCwd) }).execute(id, params, signal, onUpdate);
+			const tool = resolved?.writeTool ?? localWrite;
+			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
 
 	pi.registerTool({
 		...localEdit,
 		async execute(id, params, signal, onUpdate) {
-			const remote = resolved;
-			if (!remote) return localEdit.execute(id, params, signal, onUpdate);
-			return createEditTool(localCwd, { operations: createRemoteEditOps(remote.session, remote.config.remoteCwd, localCwd) }).execute(id, params, signal, onUpdate);
+			const tool = resolved?.editTool ?? localEdit;
+			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
 
 	pi.registerTool({
 		...localBash,
 		async execute(id, params, signal, onUpdate) {
-			const remote = resolved;
-			if (!remote) return localBash.execute(id, params, signal, onUpdate);
-			return createBashTool(localCwd, { operations: createRemoteBashOps(remote.session, remote.config.remoteCwd, localCwd) }).execute(id, params, signal, onUpdate);
+			const tool = resolved?.bashTool ?? localBash;
+			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
 
 	pi.registerTool({
 		...localLs,
 		async execute(id, params, signal, onUpdate) {
-			const remote = resolved;
-			if (!remote) return localLs.execute(id, params, signal, onUpdate);
-			return createLsTool(localCwd, { operations: createRemoteLsOps(remote.session, remote.config.remoteCwd, localCwd) }).execute(id, params, signal, onUpdate);
+			const tool = resolved?.lsTool ?? localLs;
+			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
 
 	pi.registerTool({
 		...localFind,
 		async execute(id, params, signal, onUpdate) {
-			const remote = resolved;
-			if (!remote) return localFind.execute(id, params, signal, onUpdate);
-			return createFindTool(localCwd, { operations: createRemoteFindOps(remote.session, remote.config.remoteCwd, localCwd) }).execute(id, params, signal, onUpdate);
+			const tool = resolved?.findTool ?? localFind;
+			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
 
 	pi.registerTool({
 		...localGrep,
 		async execute(id, params, signal, onUpdate, ctx) {
-			const remote = resolved;
-			if (!remote) return localGrep.execute(id, params, signal, onUpdate, ctx);
-			return runRemoteGrep(remote.session, remote.config.remoteCwd, localCwd, params as RemoteGrepParams, signal);
+			if (!resolved) return localGrep.execute(id, params, signal, onUpdate, ctx);
+			return runRemoteGrep(resolved.context, params as RemoteGrepParams, signal);
 		},
 	});
 
@@ -589,20 +612,11 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			await ctx.waitForIdle();
-			await remote.session.ensure();
+			await remote.context.session.ensure();
 
 			const { config } = remote;
-			const sendTmuxCommand = (command: string) =>
-				sshExec(config.remote, `tmux send-keys -t ${shQuote(config.session)} ${shQuote(command)} C-m`);
-
-			// Make the pane feel normal while the user is attached. We intentionally leave
-			// echo enabled after detach; the next Pi tool execution turns it off before
-			// pasting internal payloads. This avoids the visible post-detach `stty -echo`
-			// command and stops the attach flow from fighting tmux/shell state.
-			if (!remote.session.isHumanEchoLikelyOn()) {
-				await sendTmuxCommand("stty echo 2>/dev/null || true; export PS1='[pi-ssh-tmux]$ '").catch(() => {});
-				await sleep(150);
-			}
+			await sshExec(config.remote, `tmux send-keys -t ${shQuote(config.session)} ${shQuote("stty echo; export PS1='[pi-ssh-tmux]$ '")} C-m`);
+			await sleep(150);
 
 			const exitCode = await ctx.ui.custom<number | null>((tui, _theme, _kb, done) => {
 				tui.stop();
@@ -617,8 +631,6 @@ export default function (pi: ExtensionAPI) {
 				done(result.status);
 				return { render: () => [], invalidate: () => {} };
 			});
-
-			remote.session.markHumanEchoLikelyOn();
 
 			if (exitCode === 0) ctx.ui.notify("Returned from SSH tmux session", "info");
 			else ctx.ui.notify(`SSH tmux attach exited with code ${exitCode ?? "unknown"}`, "warning");
@@ -636,8 +648,8 @@ export default function (pi: ExtensionAPI) {
 
 			await ctx.waitForIdle();
 			const { config } = remote;
-			await sshExec(config.remote, `tmux kill-session -t ${shQuote(config.session)} 2>/dev/null || true`);
-			remote.session.markNotReady();
+			await sshExec(config.remote, `tmux kill-session -t ${shQuote(config.session)}`);
+			remote.context.session.markNotReady();
 			ctx.ui.notify(`Killed SSH tmux session ${config.session} on ${config.remote}`, "info");
 			ctx.ui.setStatus("ssh-tmux", ctx.ui.theme.fg("warning", `SSH tmux killed: ${config.remote}:${config.remoteCwd}`));
 		},
@@ -649,25 +661,21 @@ export default function (pi: ExtensionAPI) {
 
 		const parsed = parseSshTmuxArg(arg);
 		const remoteCwd = await resolveRemoteCwd(parsed.remote, parsed.remoteCwd);
-		const shellIdleTimeoutSeconds = parseNonNegativeInteger(pi.getFlag("ssh-tmux-shell-timeout"), DEFAULT_SHELL_IDLE_TIMEOUT_SECONDS);
 		const config: SshTmuxConfig = {
 			remote: parsed.remote,
 			remoteCwd,
 			session: DEFAULT_SESSION,
-			shellIdleTimeoutSeconds,
+			shellIdleTimeoutSeconds: parseShellIdleTimeout(pi.getFlag("ssh-tmux-shell-timeout")),
 		};
-		const session = new SshTmuxSession(config);
-		await session.ensure();
-		resolved = { config, session };
+		resolved = await createRemoteState(config, localCwd);
 
 		ctx.ui.setStatus("ssh-tmux", ctx.ui.theme.fg("accent", `SSH tmux: ${config.remote}:${config.remoteCwd} (${config.session})`));
 		ctx.ui.notify(`SSH tmux mode: ${config.remote}:${config.remoteCwd} (${config.session})`, "info");
 	});
 
 	pi.on("user_bash", () => {
-		const remote = resolved;
-		if (!remote) return;
-		return { operations: createRemoteBashOps(remote.session, remote.config.remoteCwd, localCwd) };
+		if (!resolved) return;
+		return { operations: createRemoteBashOps(resolved.context) };
 	});
 
 	pi.on("before_agent_start", async (event) => {
