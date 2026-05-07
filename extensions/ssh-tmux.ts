@@ -15,6 +15,8 @@
  *   - tmux
  *   - bash
  *   - base64
+ *   - find
+ *   - ripgrep (rg) for grep/find tools
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -39,13 +41,11 @@ import {
 	type ReadOperations,
 	type WriteOperations,
 } from "@mariozechner/pi-coding-agent";
-import { Type } from "typebox";
 
 type SshTmuxConfig = {
 	remote: string;
 	remoteCwd: string;
 	session: string;
-	target: string;
 	shellIdleTimeoutSeconds: number;
 };
 
@@ -156,7 +156,7 @@ class SshTmuxSession {
 	}
 
 	async ensure(): Promise<void> {
-		const { remote, remoteCwd, session, target, shellIdleTimeoutSeconds } = this.config;
+		const { remote, remoteCwd, session, shellIdleTimeoutSeconds } = this.config;
 		if (this.ready) {
 			const hasSession = await sshExec(remote, `tmux has-session -t ${shQuote(session)} 2>/dev/null && echo yes || echo no`).catch(() => Buffer.from("no"));
 			if (hasSession.toString().trim() === "yes") return;
@@ -166,6 +166,8 @@ class SshTmuxSession {
 		await sshExec(remote, "command -v tmux >/dev/null || { echo 'Remote requirement missing: tmux. Install tmux on the remote host.' >&2; exit 127; }");
 		await sshExec(remote, "command -v bash >/dev/null || { echo 'Remote requirement missing: bash.' >&2; exit 127; }");
 		await sshExec(remote, "command -v base64 >/dev/null || { echo 'Remote requirement missing: base64.' >&2; exit 127; }");
+		await sshExec(remote, "command -v find >/dev/null || { echo 'Remote requirement missing: find.' >&2; exit 127; }");
+		await sshExec(remote, "command -v rg >/dev/null || { echo 'Remote requirement missing: ripgrep (rg).' >&2; exit 127; }");
 		await sshExec(remote, `mkdir -p ${shQuote(remoteCwd)}`);
 
 		const create = [
@@ -175,7 +177,7 @@ class SshTmuxSession {
 		].join(" ");
 		await sshExec(remote, create);
 		await sshExec(remote, `tmux set-option -t ${shQuote(session)} history-limit 200000 >/dev/null`);
-		await sshExec(remote, `tmux resize-window -t ${shQuote(target)} -x 1000 -y 60 >/dev/null 2>&1 || true`);
+		await sshExec(remote, `tmux resize-window -t ${shQuote(session)} -x 1000 -y 60 >/dev/null 2>&1 || true`);
 
 		const timeoutSetup = shellIdleTimeoutSeconds > 0 ? `export TMOUT=${shellIdleTimeoutSeconds}` : "unset TMOUT";
 
@@ -276,18 +278,18 @@ class SshTmuxSession {
 
 	private async pasteToPane(text: string): Promise<void> {
 		const bufferName = `pi-${randomId()}`;
-		const { remote, target } = this.config;
+		const { remote, session } = this.config;
 		await sshExec(remote, `tmux load-buffer -b ${shQuote(bufferName)} -`, text);
-		await sshExec(remote, `tmux paste-buffer -b ${shQuote(bufferName)} -t ${shQuote(target)} && tmux delete-buffer -b ${shQuote(bufferName)}`);
+		await sshExec(remote, `tmux paste-buffer -b ${shQuote(bufferName)} -t ${shQuote(session)} && tmux delete-buffer -b ${shQuote(bufferName)}`);
 	}
 
 	private async sendKeys(...keys: string[]): Promise<void> {
 		const quoted = keys.map(shQuote).join(" ");
-		await sshExec(this.config.remote, `tmux send-keys -t ${shQuote(this.config.target)} ${quoted}`);
+		await sshExec(this.config.remote, `tmux send-keys -t ${shQuote(this.config.session)} ${quoted}`);
 	}
 
 	private async capture(): Promise<Buffer> {
-		return sshExec(this.config.remote, `tmux capture-pane -J -p -t ${shQuote(this.config.target)} -S -`);
+		return sshExec(this.config.remote, `tmux capture-pane -J -p -t ${shQuote(this.config.session)} -S -`);
 	}
 }
 
@@ -325,13 +327,13 @@ function createRemoteReadOps(session: SshTmuxSession, remoteCwd: string, localCw
 		},
 		access: async (p) => {
 			const remotePath = toRemote(p);
-			requireOk(await session.run(`p=${shQuote(remotePath)}\ntest -r "$p" || sudo -n test -r "$p"`, { audit: audit("access", remotePath) }), `access ${remotePath}`);
+			requireOk(await session.run(`p=${shQuote(remotePath)}\ntest -r "$p" || sudo -n test -r "$p"`), `access ${remotePath}`);
 		},
 		detectImageMimeType: async (p) => {
 			const remotePath = toRemote(p);
 			try {
 				const out = requireOk(
-					await session.run(`p=${shQuote(remotePath)}\nif test -r "$p"; then file --mime-type -b "$p"; else sudo -n file --mime-type -b "$p"; fi`, { audit: audit("mime", remotePath) }),
+					await session.run(`p=${shQuote(remotePath)}\nif test -r "$p"; then file --mime-type -b "$p"; else sudo -n file --mime-type -b "$p"; fi`),
 					`mime ${remotePath}`,
 				)
 					.toString("utf8")
@@ -385,7 +387,7 @@ function createRemoteEditOps(session: SshTmuxSession, remoteCwd: string, localCw
 		access: async (p) => {
 			const remotePath = toRemote(p);
 			requireOk(
-				await session.run(`p=${shQuote(remotePath)}\n{ test -r "$p" && test -w "$p"; } || { sudo -n test -r "$p" && sudo -n test -w "$p"; }`, { audit: audit("edit access", remotePath) }),
+				await session.run(`p=${shQuote(remotePath)}\n{ test -r "$p" && test -w "$p"; } || { sudo -n test -r "$p" && sudo -n test -w "$p"; }`),
 				`edit access ${remotePath}`,
 			);
 		},
@@ -407,18 +409,18 @@ function createRemoteBashOps(session: SshTmuxSession, remoteCwd: string, localCw
 function createRemoteLsOps(session: SshTmuxSession, remoteCwd: string, localCwd: string): LsOperations {
 	const toRemote = createPathMapper(localCwd, remoteCwd);
 	return {
-		exists: async (p) => (await session.run(`test -e ${shQuote(toRemote(p))}`, { audit: audit("exists", toRemote(p)) })).exitCode === 0,
+		exists: async (p) => (await session.run(`test -e ${shQuote(toRemote(p))}`)).exitCode === 0,
 		stat: async (p) => {
 			const remotePath = toRemote(p);
-			const result = await session.run(`test -d ${shQuote(remotePath)}`, { audit: audit("stat", remotePath) });
+			const result = await session.run(`test -d ${shQuote(remotePath)}`);
 			if (result.exitCode === 0) return { isDirectory: () => true };
-			const exists = await session.run(`test -e ${shQuote(remotePath)}`, { audit: audit("exists", remotePath) });
+			const exists = await session.run(`test -e ${shQuote(remotePath)}`);
 			if (exists.exitCode === 0) return { isDirectory: () => false };
 			throw new Error(`Path not found: ${remotePath}`);
 		},
 		readdir: async (p) => {
 			const remotePath = toRemote(p);
-			const script = `python3 - <<'PY'\nimport os\nfor entry in os.listdir(${JSON.stringify(remotePath)}):\n    print(entry)\nPY`;
+			const script = `find ${shQuote(remotePath)} -mindepth 1 -maxdepth 1 -printf '%f\\n'`;
 			return requireOk(await session.run(script, { audit: audit("ls", remotePath) }), `readdir ${remotePath}`).toString("utf8").split("\n").filter(Boolean);
 		},
 	};
@@ -427,26 +429,12 @@ function createRemoteLsOps(session: SshTmuxSession, remoteCwd: string, localCwd:
 function createRemoteFindOps(session: SshTmuxSession, remoteCwd: string, localCwd: string): FindOperations {
 	const toRemote = createPathMapper(localCwd, remoteCwd);
 	return {
-		exists: async (p) => (await session.run(`test -e ${shQuote(toRemote(p))}`, { audit: audit("exists", toRemote(p)) })).exitCode === 0,
+		exists: async (p) => (await session.run(`test -e ${shQuote(toRemote(p))}`)).exitCode === 0,
 		glob: async (pattern, cwd, { limit }) => {
 			const remoteSearchRoot = toRemote(cwd);
 			const script = [
 				`cd ${shQuote(remoteSearchRoot)}`,
-				`if command -v rg >/dev/null 2>&1; then`,
-				`  rg --files --hidden --glob ${shQuote(pattern)} --glob '!node_modules/**' --glob '!.git/**' | head -n ${Math.max(1, limit)}`,
-				`else`,
-				`  python3 - ${shQuote(pattern)} ${String(Math.max(1, limit))} <<'PY'`,
-				`import fnmatch, os, sys`,
-				`pat=sys.argv[1]; limit=int(sys.argv[2]); count=0`,
-				`for root, dirs, files in os.walk('.'):` ,
-				`    dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules')]`,
-				`    for name in files:`,
-				`        rel=os.path.join(root, name).lstrip('./')`,
-				`        if fnmatch.fnmatch(rel, pat):`,
-				`            print(rel); count += 1`,
-				`            if count >= limit: sys.exit(0)`,
-				`PY`,
-				`fi`,
+				`rg --files --hidden --glob ${shQuote(pattern)} --glob '!node_modules/**' --glob '!.git/**' | head -n ${Math.max(1, limit)}`,
 			].join("\n");
 			const out = requireOk(await session.run(script, { audit: audit("find", `${pattern} in ${remoteSearchRoot}`) }), `find ${pattern}`).toString("utf8").trim();
 			if (!out) return [];
@@ -455,62 +443,56 @@ function createRemoteFindOps(session: SshTmuxSession, remoteCwd: string, localCw
 	};
 }
 
-const grepSchema = Type.Object({
-	pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
-	path: Type.Optional(Type.String({ description: "Directory or file to search (default: current directory)" })),
-	glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" })),
-	ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search (default: false)" })),
-	literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal string instead of regex (default: false)" })),
-	context: Type.Optional(Type.Number({ description: "Number of lines to show before and after each match (default: 0)" })),
-	limit: Type.Optional(Type.Number({ description: "Maximum number of matches to return (default: 100)" })),
-});
+type RemoteGrepParams = {
+	pattern: string;
+	path?: string;
+	glob?: string;
+	ignoreCase?: boolean;
+	literal?: boolean;
+	context?: number;
+	limit?: number;
+};
 
-function createRemoteGrepTool(session: SshTmuxSession, remoteCwd: string, localCwd: string) {
+async function runRemoteGrep(session: SshTmuxSession, remoteCwd: string, localCwd: string, params: RemoteGrepParams, signal?: AbortSignal) {
 	const toRemote = createPathMapper(localCwd, remoteCwd);
-	return {
-		name: "grep",
-		label: "grep",
-		description: `Search remote file contents through the SSH tmux session. Returns matching lines with paths and line numbers. Output is truncated to 100 matches or ${DEFAULT_MAX_BYTES / 1024}KB.`,
-		promptSnippet: "Search remote file contents for patterns through SSH tmux",
-		parameters: grepSchema,
-		async execute(_toolCallId, params: { pattern: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; context?: number; limit?: number }, signal?: AbortSignal) {
-			const searchPath = toRemote(path.resolve(localCwd, params.path || "."));
-			const effectiveLimit = Math.max(1, params.limit ?? 100);
-			const rgArgs = ["--line-number", "--color=never", "--hidden"];
-			if (params.ignoreCase) rgArgs.push("--ignore-case");
-			if (params.literal) rgArgs.push("--fixed-strings");
-			if (params.context && params.context > 0) rgArgs.push("-C", String(Math.floor(params.context)));
-			if (params.glob) rgArgs.push("--glob", params.glob);
-			const quotedArgs = rgArgs.map(shQuote).join(" ");
-			const script = [
-				`if ! command -v rg >/dev/null 2>&1; then echo 'ripgrep (rg) is required on the remote for grep'; exit 127; fi`,
-				`rg ${quotedArgs} -- ${shQuote(params.pattern)} ${shQuote(searchPath)} | head -n ${effectiveLimit + 1}`,
-			].join("\n");
-			const result = await session.run(script, { signal, audit: audit("grep", `${params.pattern} in ${searchPath}`) });
-			// rg returns 1 for no matches, but the pipe exits with head's status. Treat any
-			// emitted rg error text as normal command output so the model can see it.
-			if (result.exitCode !== 0) throw new Error(result.output.toString("utf8") || `grep failed (${result.exitCode})`);
-			let lines = result.output.toString("utf8").split("\n").filter(Boolean);
-			const matchLimitReached = lines.length > effectiveLimit ? effectiveLimit : undefined;
-			if (matchLimitReached) lines = lines.slice(0, effectiveLimit);
-			if (lines.length === 0) return { content: [{ type: "text" as const, text: "No matches found" }], details: undefined };
-			const raw = lines.join("\n");
-			const truncation = truncateHead(raw, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
-			let text = truncation.content;
-			const notices: string[] = [];
-			const details: { truncation?: unknown; matchLimitReached?: number } = {};
-			if (matchLimitReached) {
-				notices.push(`${effectiveLimit} matches limit reached`);
-				details.matchLimitReached = effectiveLimit;
-			}
-			if (truncation.truncated) {
-				notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
-				details.truncation = truncation;
-			}
-			if (notices.length) text += `\n\n[${notices.join(". ")}]`;
-			return { content: [{ type: "text" as const, text }], details: Object.keys(details).length ? details : undefined };
-		},
-	};
+	const searchPath = toRemote(path.resolve(localCwd, params.path || "."));
+	const effectiveLimit = Math.max(1, params.limit ?? 100);
+	const rgArgs = ["--line-number", "--color=never", "--hidden"];
+	if (params.ignoreCase) rgArgs.push("--ignore-case");
+	if (params.literal) rgArgs.push("--fixed-strings");
+	if (params.context && params.context > 0) rgArgs.push("-C", String(Math.floor(params.context)));
+	if (params.glob) rgArgs.push("--glob", params.glob);
+
+	const script = [
+		`tmp=$(mktemp)`,
+		`rg ${rgArgs.map(shQuote).join(" ")} -- ${shQuote(params.pattern)} ${shQuote(searchPath)} > "$tmp"`,
+		`rc=$?`,
+		`if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then cat "$tmp"; rm -f "$tmp"; exit "$rc"; fi`,
+		`head -n ${effectiveLimit + 1} "$tmp"`,
+		`rm -f "$tmp"`,
+	].join("\n");
+	const result = await session.run(script, { signal, audit: audit("grep", `${params.pattern} in ${searchPath}`) });
+	if (result.exitCode !== 0) throw new Error(result.output.toString("utf8") || `grep failed (${result.exitCode})`);
+
+	let lines = result.output.toString("utf8").split("\n").filter(Boolean);
+	const matchLimitReached = lines.length > effectiveLimit ? effectiveLimit : undefined;
+	if (matchLimitReached) lines = lines.slice(0, effectiveLimit);
+	if (lines.length === 0) return { content: [{ type: "text" as const, text: "No matches found" }], details: undefined };
+
+	const truncation = truncateHead(lines.join("\n"), { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+	let text = truncation.content;
+	const notices: string[] = [];
+	const details: { truncation?: unknown; matchLimitReached?: number } = {};
+	if (matchLimitReached) {
+		notices.push(`${effectiveLimit} matches limit reached`);
+		details.matchLimitReached = effectiveLimit;
+	}
+	if (truncation.truncated) {
+		notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
+		details.truncation = truncation;
+	}
+	if (notices.length) text += `\n\n[${notices.join(". ")}]`;
+	return { content: [{ type: "text" as const, text }], details: Object.keys(details).length ? details : undefined };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -530,12 +512,10 @@ export default function (pi: ExtensionAPI) {
 	const localGrep = createGrepTool(localCwd);
 	let resolved: { config: SshTmuxConfig; session: SshTmuxSession } | null = null;
 
-	const getRemote = () => resolved;
-
 	pi.registerTool({
 		...localRead,
 		async execute(id, params, signal, onUpdate) {
-			const remote = getRemote();
+			const remote = resolved;
 			if (!remote) return localRead.execute(id, params, signal, onUpdate);
 			return createReadTool(localCwd, { operations: createRemoteReadOps(remote.session, remote.config.remoteCwd, localCwd) }).execute(id, params, signal, onUpdate);
 		},
@@ -544,7 +524,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		...localWrite,
 		async execute(id, params, signal, onUpdate) {
-			const remote = getRemote();
+			const remote = resolved;
 			if (!remote) return localWrite.execute(id, params, signal, onUpdate);
 			return createWriteTool(localCwd, { operations: createRemoteWriteOps(remote.session, remote.config.remoteCwd, localCwd) }).execute(id, params, signal, onUpdate);
 		},
@@ -553,7 +533,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		...localEdit,
 		async execute(id, params, signal, onUpdate) {
-			const remote = getRemote();
+			const remote = resolved;
 			if (!remote) return localEdit.execute(id, params, signal, onUpdate);
 			return createEditTool(localCwd, { operations: createRemoteEditOps(remote.session, remote.config.remoteCwd, localCwd) }).execute(id, params, signal, onUpdate);
 		},
@@ -562,7 +542,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		...localBash,
 		async execute(id, params, signal, onUpdate) {
-			const remote = getRemote();
+			const remote = resolved;
 			if (!remote) return localBash.execute(id, params, signal, onUpdate);
 			return createBashTool(localCwd, { operations: createRemoteBashOps(remote.session, remote.config.remoteCwd, localCwd) }).execute(id, params, signal, onUpdate);
 		},
@@ -571,7 +551,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		...localLs,
 		async execute(id, params, signal, onUpdate) {
-			const remote = getRemote();
+			const remote = resolved;
 			if (!remote) return localLs.execute(id, params, signal, onUpdate);
 			return createLsTool(localCwd, { operations: createRemoteLsOps(remote.session, remote.config.remoteCwd, localCwd) }).execute(id, params, signal, onUpdate);
 		},
@@ -580,25 +560,25 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		...localFind,
 		async execute(id, params, signal, onUpdate) {
-			const remote = getRemote();
+			const remote = resolved;
 			if (!remote) return localFind.execute(id, params, signal, onUpdate);
 			return createFindTool(localCwd, { operations: createRemoteFindOps(remote.session, remote.config.remoteCwd, localCwd) }).execute(id, params, signal, onUpdate);
 		},
 	});
 
 	pi.registerTool({
-		...createRemoteGrepTool({} as SshTmuxSession, localCwd, localCwd),
+		...localGrep,
 		async execute(id, params, signal, onUpdate, ctx) {
-			const remote = getRemote();
+			const remote = resolved;
 			if (!remote) return localGrep.execute(id, params, signal, onUpdate, ctx);
-			return createRemoteGrepTool(remote.session, remote.config.remoteCwd, localCwd).execute(id, params as any, signal);
+			return runRemoteGrep(remote.session, remote.config.remoteCwd, localCwd, params as RemoteGrepParams, signal);
 		},
 	});
 
 	pi.registerCommand("ssh-tmux-attach", {
 		description: "Suspend Pi and attach this terminal to the remote SSH tmux session",
 		handler: async (_args, ctx) => {
-			const remote = getRemote();
+			const remote = resolved;
 			if (!remote) {
 				ctx.ui.notify("No --ssh-tmux session is active", "warning");
 				return;
@@ -648,7 +628,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("ssh-tmux-kill", {
 		description: "Kill the remote SSH tmux session used by this extension",
 		handler: async (_args, ctx) => {
-			const remote = getRemote();
+			const remote = resolved;
 			if (!remote) {
 				ctx.ui.notify("No --ssh-tmux session is active", "warning");
 				return;
@@ -674,9 +654,6 @@ export default function (pi: ExtensionAPI) {
 			remote: parsed.remote,
 			remoteCwd,
 			session: DEFAULT_SESSION,
-			// Target the active pane in the session. This avoids assuming tmux window/pane
-			// base indexes are 0; user configs often set them to 1.
-			target: DEFAULT_SESSION,
 			shellIdleTimeoutSeconds,
 		};
 		const session = new SshTmuxSession(config);
@@ -688,13 +665,13 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("user_bash", () => {
-		const remote = getRemote();
+		const remote = resolved;
 		if (!remote) return;
 		return { operations: createRemoteBashOps(remote.session, remote.config.remoteCwd, localCwd) };
 	});
 
 	pi.on("before_agent_start", async (event) => {
-		const remote = getRemote();
+		const remote = resolved;
 		if (!remote) return;
 		const { config } = remote;
 		const sudoHint = [

@@ -11,6 +11,15 @@ pi -e /path/to/pi-ssh-tmux --ssh-tmux user@host
 
 The extension creates or reuses a remote tmux session named `pi-ssh-tmux`. If no remote path is provided, it uses the remote login directory.
 
+## Remote requirements
+
+- SSH key-based auth
+- `tmux`
+- `bash`
+- `base64`
+- `find`
+- `ripgrep` (`rg`) for the `grep` and `find` tools
+
 ## What runs remotely
 
 The extension overrides these Pi tools so they execute against the remote tmux session:
