@@ -60,6 +60,7 @@ type MatrixOptions = {
 	done: () => void;
 	reset: () => void;
 	search?: boolean;
+	fixedHeight?: () => number;
 };
 
 type PromptSection = {
@@ -98,6 +99,7 @@ const SCOPES: SettingsScope[] = ["session", "directory", "global"];
 const SETTING_COLUMN_WIDTH = 30;
 const EFFECTIVE_COLUMN_WIDTH = 14;
 const SCOPE_COLUMN_WIDTH = 14;
+const SETTINGS_MATRIX_FIXED_LINES = 34;
 const FULL_PROMPT_VIEWER_FIXED_LINES = 5;
 
 let sessionConfig: PromptSectionsConfig = {};
@@ -217,13 +219,15 @@ async function showSettings(ctx: ExtensionCommandContext, pi: Pick<ExtensionAPI,
 	const saveScope = (scope: SettingsScope) => saveScopedConfig(scope, ctx.cwd, configs[scope], pi);
 
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+		const matrixHeight = () => Math.max(8, Math.min(SETTINGS_MATRIX_FIXED_LINES, tui.terminal.rows - 4));
 		const fullPageSize = () => Math.max(8, tui.terminal.rows - 4);
-		const rows = mainRows(skills, configs, saveScope, theme, fullPageSize);
+		const rows = mainRows(skills, configs, saveScope, theme, matrixHeight, fullPageSize);
 		return createMatrix(rows, {
 			title: "Prompt sections",
 			theme,
 			reset: () => resetAllSettings(configs, saveScope),
 			done: () => done(undefined),
+			fixedHeight: matrixHeight,
 		});
 	});
 }
@@ -233,6 +237,7 @@ function mainRows(
 	configs: ScopedConfigs,
 	saveScope: (scope: SettingsScope) => void,
 	theme: Theme,
+	matrixHeight: () => number,
 	fullPageSize: () => number,
 ): MatrixRow[] {
 	const basePrompt = latestBaseSystemPrompt ?? "";
@@ -244,7 +249,7 @@ function mainRows(
 		preview: () => promptSectionText("skills") ?? formatSkillsForPrompt(configurableSkills(skills)),
 		effective: () => skillsSummary(skills, effectiveAllowedSkillNames(configs, skills)),
 		cellText: (scope) => skillScopeSummary(configs[scope]),
-		open: (done) => createSkillsMatrix(skills, configs, saveScope, done, theme),
+		open: (done) => createSkillsMatrix(skills, configs, saveScope, done, theme, matrixHeight),
 	});
 
 	return [
@@ -284,8 +289,37 @@ function promptSectionRows(configs: ScopedConfigs, saveScope: (scope: SettingsSc
 	}));
 }
 
-function createSkillsMatrix(skills: Skill[], configs: ScopedConfigs, saveScope: (scope: SettingsScope) => void, done: () => void, theme: Theme): Component {
+function createSkillsMatrix(
+	skills: Skill[],
+	configs: ScopedConfigs,
+	saveScope: (scope: SettingsScope) => void,
+	done: () => void,
+	theme: Theme,
+	fixedHeight: () => number,
+): Component {
 	const availableSkills = configurableSkills(skills).sort((a, b) => a.name.localeCompare(b.name));
+	const groupedRows = skillGroups(availableSkills).flatMap((group): MatrixRow[] => [
+		{
+			id: `__group:${group.id}`,
+			label: group.label,
+			description: group.description,
+			preview: () => formatSkillsForPrompt(group.skills),
+			effective: () => skillsSummary(group.skills, effectiveAllowedSkillNames(configs, skills)),
+			cellText: (scope) => skillScopeSummaryForSkills(configs[scope], group.skills),
+		},
+		...group.skills.map((skill): MatrixRow => ({
+			id: skill.name,
+			label: `  ${skill.name}`,
+			description: skill.description,
+			preview: () => formatSkillsForPrompt([skill]),
+			effective: () => onOff(effectiveSkillEnabled(configs, skill.name)),
+			cell: (scope) => skillCell(configs[scope], skill.name),
+			setCell: (scope, state) => {
+				setSkillCell(configs[scope], skill.name, state);
+				saveScope(scope);
+			},
+		})),
+	]);
 	const rows: MatrixRow[] = [
 		{
 			id: "__all",
@@ -299,18 +333,7 @@ function createSkillsMatrix(skills: Skill[], configs: ScopedConfigs, saveScope: 
 				saveScope(scope);
 			},
 		},
-		...availableSkills.map((skill): MatrixRow => ({
-			id: skill.name,
-			label: skill.name,
-			description: skill.description,
-			preview: () => formatSkillsForPrompt([skill]),
-			effective: () => onOff(effectiveSkillEnabled(configs, skill.name)),
-			cell: (scope) => skillCell(configs[scope], skill.name),
-			setCell: (scope, state) => {
-				setSkillCell(configs[scope], skill.name, state);
-				saveScope(scope);
-			},
-		})),
+		...groupedRows,
 	];
 
 	return createMatrix(rows, {
@@ -319,7 +342,59 @@ function createSkillsMatrix(skills: Skill[], configs: ScopedConfigs, saveScope: 
 		reset: () => resetSkillSettings(configs, saveScope),
 		done,
 		search: true,
+		fixedHeight,
 	});
+}
+
+type SkillGroup = {
+	id: string;
+	label: string;
+	description: string;
+	skills: Skill[];
+};
+
+function skillGroups(skills: Skill[]): SkillGroup[] {
+	const groups = new Map<string, SkillGroup>();
+	for (const skill of skills) {
+		const definition = skillGroupDefinition(skill);
+		let group = groups.get(definition.id);
+		if (!group) {
+			group = { ...definition, skills: [] };
+			groups.set(definition.id, group);
+		}
+		group.skills.push(skill);
+	}
+
+	return [...groups.values()].sort((a, b) => skillGroupSortOrder(a.id) - skillGroupSortOrder(b.id) || a.label.localeCompare(b.label));
+}
+
+function skillGroupDefinition(skill: Skill): Omit<SkillGroup, "skills"> {
+	const scope = skill.sourceInfo.scope;
+	if (scope === "user") {
+		return {
+			id: "global",
+			label: "Global skills",
+			description: "Summary of skills loaded from your global Pi configuration and globally installed Pi packages.",
+		};
+	}
+	if (scope === "project") {
+		return {
+			id: "project",
+			label: "Project skills",
+			description: "Summary of skills loaded from this project, including .pi/skills and project-installed Pi packages.",
+		};
+	}
+	return {
+		id: "other",
+		label: "Other skills",
+		description: "Summary of skills loaded from explicit paths or temporary sources.",
+	};
+}
+
+function skillGroupSortOrder(id: string): number {
+	if (id === "project") return 0;
+	if (id === "global") return 1;
+	return 2;
 }
 
 function createMatrix(rows: MatrixRow[], options: MatrixOptions): Component {
@@ -360,7 +435,7 @@ function createMatrix(rows: MatrixRow[], options: MatrixOptions): Component {
 				? "  ↑/↓ row · s session · d directory · g global · r reset · Type search · Esc back"
 				: "  ↑/↓ row · s session · d directory · g global · r reset · Esc close", width));
 			if (row?.preview) renderPreview(lines, row, width, options.theme);
-			return lines;
+			return fitLinesToHeight(lines, options.fixedHeight?.());
 		},
 		invalidate: () => child?.invalidate?.(),
 		handleInput: (data) => {
@@ -463,6 +538,13 @@ function createFullPromptViewer(
 
 function pageFromScroll(scroll: number, pageSize: number): number {
 	return Math.floor(scroll / pageSize);
+}
+
+function fitLinesToHeight(lines: string[], height?: number): string[] {
+	if (height === undefined) return lines;
+	const target = Math.max(1, height);
+	if (lines.length >= target) return lines.slice(0, target);
+	return [...lines, ...Array.from({ length: target - lines.length }, () => "")];
 }
 
 function renderWrappedSection(lines: string[], text: string, width: number): void {
@@ -727,6 +809,20 @@ function skillScopeSummary(config: PromptSectionsConfig): string {
 
 	const allowCount = settings.allow?.length ?? 0;
 	const denyCount = settings.deny?.length ?? 0;
+	return formatSkillScopeSummary(settings, allowCount, denyCount);
+}
+
+function skillScopeSummaryForSkills(config: PromptSectionsConfig, skills: Skill[]): string {
+	const settings = config.skills;
+	if (!settings) return "";
+
+	const skillNames = new Set(skills.map((skill) => skill.name));
+	const allowCount = (settings.allow ?? []).filter((name) => skillNames.has(name)).length;
+	const denyCount = (settings.deny ?? []).filter((name) => skillNames.has(name)).length;
+	return formatSkillScopeSummary(settings, allowCount, denyCount);
+}
+
+function formatSkillScopeSummary(settings: SkillSettings, allowCount: number, denyCount: number): string {
 	const hasDefault = hasOwn(settings, "default");
 	if (!hasDefault && allowCount === 0 && denyCount === 0) return "";
 
