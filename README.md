@@ -80,6 +80,8 @@ Attach to the same remote tmux session from inside Pi:
 
 Pi suspends while you are attached. The extension enables terminal echo for the human attach session and leaves it on after you detach. The next Pi tool execution disables echo again before sending internal payloads.
 
+For compatibility with footer/status-line extensions such as `pi-powerline-footer`, `/ssh-tmux-attach` resets terminal scroll margins, exits alternate-screen modes, and disables tmux-style mouse reporting before launching `ssh -tt ... tmux attach`, then resets them again before Pi's TUI restarts. When Pi repaints after detach, it avoids the full TUI redraw path that clears terminal scrollback, so normal mouse-wheel scrollback remains available.
+
 While attached, run:
 
 ```bash

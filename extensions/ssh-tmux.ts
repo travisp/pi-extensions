@@ -114,6 +114,51 @@ function parseTmuxName(value: unknown): string {
 	return value;
 }
 
+const TERMINAL_NORMAL_MODE = [
+	"\x1b[?1049l", // leave alternate screen
+	"\x1b[r", // reset scroll margins
+	"\x1b[?6l", // leave origin mode
+	"\x1b[?25h", // show cursor
+	"\x1b[?1000l", // disable mouse reporting
+	"\x1b[?1002l",
+	"\x1b[?1003l",
+	"\x1b[?1006l",
+	"\x1b[?1007l", // disable alternate-scroll mode
+	"\x1b[0m", // reset attributes
+].join("");
+
+type TuiRenderState = {
+	previousLines: string[];
+	previousWidth: number;
+	previousHeight: number;
+	cursorRow: number;
+	hardwareCursorRow: number;
+	maxLinesRendered: number;
+	previousViewportTop: number;
+	requestRender: (force?: boolean) => void;
+};
+
+function resetTerminalScrollbackModes(): void {
+	// tmux and footer/status-line extensions both manipulate terminal modes. Reset
+	// the modes that affect scrollback before giving the terminal to ssh/tmux and
+	// again before Pi's TUI resumes.
+	process.stdout.write(TERMINAL_NORMAL_MODE);
+}
+
+function repaintTuiWithoutClearingScrollback(tui: unknown): void {
+	// requestRender(true) clears terminal scrollback. Instead, reset the renderer's
+	// bookkeeping so the next normal render repaints as an initial render.
+	const state = tui as TuiRenderState;
+	state.previousLines = [];
+	state.previousWidth = 0;
+	state.previousHeight = 0;
+	state.cursorRow = 0;
+	state.hardwareCursorRow = 0;
+	state.maxLinesRendered = 0;
+	state.previousViewportTop = 0;
+	state.requestRender();
+}
+
 function sshExec(remote: string, command: string, input?: Buffer | string): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
 		const stdin = input === undefined ? "ignore" : "pipe";
@@ -608,15 +653,19 @@ export default function (pi: ExtensionAPI) {
 
 				const exitCode = await ctx.ui.custom<number | null>((tui, _theme, _kb, done) => {
 					tui.stop();
+					resetTerminalScrollbackModes();
 					process.stdout.write("\x1b[2J\x1b[H");
 					process.stdout.write(`Attaching to ${config.remote} tmux session ${config.session}. Detach with Ctrl-b then d (not Ctrl-d).\n\n`);
-					const result = spawnSync("ssh", ["-tt", config.remote, `tmux attach -t ${shQuote(config.session)}`], {
-						stdio: "inherit",
-						env: process.env,
-					});
-					tui.start();
-					tui.requestRender(true);
-					done(result.status);
+
+					let status: number | null = null;
+					try {
+						status = spawnSync("ssh", ["-tt", config.remote, `tmux attach -t ${shQuote(config.session)}`], { stdio: "inherit" }).status;
+					} finally {
+						resetTerminalScrollbackModes();
+						tui.start();
+						repaintTuiWithoutClearingScrollback(tui);
+					}
+					done(status);
 					return { render: () => [], invalidate: () => {} };
 				});
 
