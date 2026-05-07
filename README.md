@@ -17,9 +17,7 @@ The extension creates or reuses a remote tmux session named `pi-ssh-tmux`. If no
 - `tmux`
 - `bash`
 - `base64`
-- `find`
 - `file`
-- `ripgrep` (`rg`) for the `grep` and `find` tools
 
 ## What runs remotely
 
@@ -29,9 +27,6 @@ The extension overrides these Pi tools so they execute against the remote tmux s
 - `write`
 - `edit`
 - `bash`
-- `ls`
-- `find`
-- `grep`
 
 User `!` bash commands are also routed through the same remote tmux session.
 
