@@ -22,7 +22,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -41,7 +41,7 @@ import {
 	type LsOperations,
 	type ReadOperations,
 	type WriteOperations,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 type SshTmuxConfig = {
 	remote: string;

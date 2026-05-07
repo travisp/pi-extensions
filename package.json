@@ -1,6 +1,6 @@
 {
   "name": "pi-ssh-tmux",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Pi extension that routes remote tools through a persistent tmux session over SSH.",
   "type": "module",
@@ -13,10 +13,10 @@
     ]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-agent-core": "*",
-    "@mariozechner/pi-tui": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-tui": "*",
     "typebox": "*"
   }
 }
