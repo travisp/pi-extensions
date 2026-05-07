@@ -24,9 +24,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	type BashOperations,
 	createBashTool,
+	createBashToolDefinition,
 	createEditTool,
+	createEditToolDefinition,
 	createReadTool,
+	createReadToolDefinition,
 	createWriteTool,
+	createWriteToolDefinition,
 	type EditOperations,
 	type ReadOperations,
 	type WriteOperations,
@@ -430,144 +434,154 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	const localCwd = process.cwd();
+	const localReadDefinition = createReadToolDefinition(localCwd);
+	const localWriteDefinition = createWriteToolDefinition(localCwd);
+	const localEditDefinition = createEditToolDefinition(localCwd);
+	const localBashDefinition = createBashToolDefinition(localCwd);
 	const localRead = createReadTool(localCwd);
 	const localWrite = createWriteTool(localCwd);
 	const localEdit = createEditTool(localCwd);
 	const localBash = createBashTool(localCwd);
 	let resolved: RemoteState | null = null;
+	let sshTmuxRegistered = false;
 
-	pi.registerTool({
-		...localRead,
-		async execute(id, params, signal, onUpdate) {
-			const tool = resolved?.readTool ?? localRead;
-			return tool.execute(id, params, signal, onUpdate);
-		},
-	});
+	const registerSshTmuxToolsAndCommands = () => {
+		if (sshTmuxRegistered) return;
+		sshTmuxRegistered = true;
 
-	pi.registerTool({
-		...localWrite,
-		async execute(id, params, signal, onUpdate) {
-			const tool = resolved?.writeTool ?? localWrite;
-			return tool.execute(id, params, signal, onUpdate);
-		},
-	});
+		pi.registerTool({
+			...localReadDefinition,
+			async execute(id, params, signal, onUpdate) {
+				const tool = resolved?.readTool ?? localRead;
+				return tool.execute(id, params, signal, onUpdate);
+			},
+		});
 
-	pi.registerTool({
-		...localEdit,
-		async execute(id, params, signal, onUpdate) {
-			const tool = resolved?.editTool ?? localEdit;
-			return tool.execute(id, params, signal, onUpdate);
-		},
-	});
+		pi.registerTool({
+			...localWriteDefinition,
+			async execute(id, params, signal, onUpdate) {
+				const tool = resolved?.writeTool ?? localWrite;
+				return tool.execute(id, params, signal, onUpdate);
+			},
+		});
 
-	pi.registerTool({
-		...localBash,
-		async execute(id, params, signal, onUpdate) {
-			const tool = resolved?.bashTool ?? localBash;
-			return tool.execute(id, params, signal, onUpdate);
-		},
-	});
+		pi.registerTool({
+			...localEditDefinition,
+			async execute(id, params, signal, onUpdate) {
+				const tool = resolved?.editTool ?? localEdit;
+				return tool.execute(id, params, signal, onUpdate);
+			},
+		});
 
-	pi.registerTool({
-		...localRead,
-		name: "local_read",
-		label: "Local Read",
-		description: "Read a file from the local machine running Pi, bypassing SSH tmux remote routing.",
-		promptSnippet: "Read a file from the local machine running Pi, not the SSH tmux remote.",
-		async execute(id, params, signal, onUpdate) {
-			return localRead.execute(id, params, signal, onUpdate);
-		},
-	});
+		pi.registerTool({
+			...localBashDefinition,
+			async execute(id, params, signal, onUpdate) {
+				const tool = resolved?.bashTool ?? localBash;
+				return tool.execute(id, params, signal, onUpdate);
+			},
+		});
 
-	pi.registerTool({
-		...localWrite,
-		name: "local_write",
-		label: "Local Write",
-		description: "Write a file on the local machine running Pi, bypassing SSH tmux remote routing.",
-		promptSnippet: "Write a file on the local machine running Pi, not the SSH tmux remote.",
-		async execute(id, params, signal, onUpdate) {
-			return localWrite.execute(id, params, signal, onUpdate);
-		},
-	});
+		pi.registerTool({
+			...localReadDefinition,
+			name: "local_read",
+			label: "Local Read",
+			description: "Read a file from the local machine running Pi, bypassing SSH tmux remote routing.",
+			promptSnippet: "Read a file from the local machine running Pi, not the SSH tmux remote.",
+			async execute(id, params, signal, onUpdate) {
+				return localRead.execute(id, params, signal, onUpdate);
+			},
+		});
 
-	pi.registerTool({
-		...localEdit,
-		name: "local_edit",
-		label: "Local Edit",
-		description: "Edit a file on the local machine running Pi, bypassing SSH tmux remote routing.",
-		promptSnippet: "Edit a file on the local machine running Pi, not the SSH tmux remote.",
-		async execute(id, params, signal, onUpdate) {
-			return localEdit.execute(id, params, signal, onUpdate);
-		},
-	});
+		pi.registerTool({
+			...localWriteDefinition,
+			name: "local_write",
+			label: "Local Write",
+			description: "Write a file on the local machine running Pi, bypassing SSH tmux remote routing.",
+			promptSnippet: "Write a file on the local machine running Pi, not the SSH tmux remote.",
+			async execute(id, params, signal, onUpdate) {
+				return localWrite.execute(id, params, signal, onUpdate);
+			},
+		});
 
-	pi.registerTool({
-		...localBash,
-		name: "local_bash",
-		label: "Local Bash",
-		description: "Run a shell command on the local machine running Pi, bypassing SSH tmux remote routing.",
-		promptSnippet: "Run a shell command on the local machine running Pi, not the SSH tmux remote.",
-		async execute(id, params, signal, onUpdate) {
-			return localBash.execute(id, params, signal, onUpdate);
-		},
-	});
+		pi.registerTool({
+			...localEditDefinition,
+			name: "local_edit",
+			label: "Local Edit",
+			description: "Edit a file on the local machine running Pi, bypassing SSH tmux remote routing.",
+			promptSnippet: "Edit a file on the local machine running Pi, not the SSH tmux remote.",
+			async execute(id, params, signal, onUpdate) {
+				return localEdit.execute(id, params, signal, onUpdate);
+			},
+		});
 
-	pi.registerCommand("ssh-tmux-attach", {
-		description: "Suspend Pi and attach this terminal to the remote SSH tmux session",
-		handler: async (_args, ctx) => {
-			const remote = resolved;
-			if (!remote) {
-				ctx.ui.notify("No --ssh-tmux session is active", "warning");
-				return;
-			}
-			if (!ctx.hasUI) {
-				ctx.ui.notify("/ssh-tmux-attach requires interactive mode", "warning");
-				return;
-			}
+		pi.registerTool({
+			...localBashDefinition,
+			name: "local_bash",
+			label: "Local Bash",
+			description: "Run a shell command on the local machine running Pi, bypassing SSH tmux remote routing.",
+			promptSnippet: "Run a shell command on the local machine running Pi, not the SSH tmux remote.",
+			async execute(id, params, signal, onUpdate) {
+				return localBash.execute(id, params, signal, onUpdate);
+			},
+		});
 
-			await ctx.waitForIdle();
-			await remote.context.session.ensure();
+		pi.registerCommand("ssh-tmux-attach", {
+			description: "Suspend Pi and attach this terminal to the remote SSH tmux session",
+			handler: async (_args, ctx) => {
+				const remote = resolved;
+				if (!remote) {
+					ctx.ui.notify("No --ssh-tmux session is active", "warning");
+					return;
+				}
+				if (!ctx.hasUI) {
+					ctx.ui.notify("/ssh-tmux-attach requires interactive mode", "warning");
+					return;
+				}
 
-			const { config } = remote;
-			await sshExec(config.remote, `tmux send-keys -t ${shQuote(config.session)} ${shQuote("stty echo; export PS1='[pi-ssh-tmux]$ '")} C-m`);
-			await sleep(150);
+				await ctx.waitForIdle();
+				await remote.context.session.ensure();
 
-			const exitCode = await ctx.ui.custom<number | null>((tui, _theme, _kb, done) => {
-				tui.stop();
-				process.stdout.write("\x1b[2J\x1b[H");
-				process.stdout.write(`Attaching to ${config.remote} tmux session ${config.session}. Detach with Ctrl-b then d (not Ctrl-d).\n\n`);
-				const result = spawnSync("ssh", ["-tt", config.remote, `tmux attach -t ${shQuote(config.session)}`], {
-					stdio: "inherit",
-					env: process.env,
+				const { config } = remote;
+				await sshExec(config.remote, `tmux send-keys -t ${shQuote(config.session)} ${shQuote("stty echo; export PS1='[pi-ssh-tmux]$ '")} C-m`);
+				await sleep(150);
+
+				const exitCode = await ctx.ui.custom<number | null>((tui, _theme, _kb, done) => {
+					tui.stop();
+					process.stdout.write("\x1b[2J\x1b[H");
+					process.stdout.write(`Attaching to ${config.remote} tmux session ${config.session}. Detach with Ctrl-b then d (not Ctrl-d).\n\n`);
+					const result = spawnSync("ssh", ["-tt", config.remote, `tmux attach -t ${shQuote(config.session)}`], {
+						stdio: "inherit",
+						env: process.env,
+					});
+					tui.start();
+					tui.requestRender(true);
+					done(result.status);
+					return { render: () => [], invalidate: () => {} };
 				});
-				tui.start();
-				tui.requestRender(true);
-				done(result.status);
-				return { render: () => [], invalidate: () => {} };
-			});
 
-			if (exitCode === 0) ctx.ui.notify("Returned from SSH tmux session", "info");
-			else ctx.ui.notify(`SSH tmux attach exited with code ${exitCode ?? "unknown"}`, "warning");
-		},
-	});
+				if (exitCode === 0) ctx.ui.notify("Returned from SSH tmux session", "info");
+				else ctx.ui.notify(`SSH tmux attach exited with code ${exitCode ?? "unknown"}`, "warning");
+			},
+		});
 
-	pi.registerCommand("ssh-tmux-kill", {
-		description: "Kill the remote SSH tmux session used by this extension",
-		handler: async (_args, ctx) => {
-			const remote = resolved;
-			if (!remote) {
-				ctx.ui.notify("No --ssh-tmux session is active", "warning");
-				return;
-			}
+		pi.registerCommand("ssh-tmux-kill", {
+			description: "Kill the remote SSH tmux session used by this extension",
+			handler: async (_args, ctx) => {
+				const remote = resolved;
+				if (!remote) {
+					ctx.ui.notify("No --ssh-tmux session is active", "warning");
+					return;
+				}
 
-			await ctx.waitForIdle();
-			const { config } = remote;
-			await sshExec(config.remote, `tmux kill-session -t ${shQuote(config.session)}`);
-			remote.context.session.markNotReady();
-			ctx.ui.notify(`Killed SSH tmux session ${config.session} on ${config.remote}`, "info");
-			ctx.ui.setStatus("ssh-tmux", ctx.ui.theme.fg("warning", `SSH tmux killed: ${config.remote}:${config.remoteCwd}`));
-		},
-	});
+				await ctx.waitForIdle();
+				const { config } = remote;
+				await sshExec(config.remote, `tmux kill-session -t ${shQuote(config.session)}`);
+				remote.context.session.markNotReady();
+				ctx.ui.notify(`Killed SSH tmux session ${config.session} on ${config.remote}`, "info");
+				ctx.ui.setStatus("ssh-tmux", ctx.ui.theme.fg("warning", `SSH tmux killed: ${config.remote}:${config.remoteCwd}`));
+			},
+		});
+	};
 
 	pi.on("session_start", async (_event, ctx) => {
 		const arg = pi.getFlag("ssh-tmux") as string | undefined;
@@ -582,6 +596,20 @@ export default function (pi: ExtensionAPI) {
 			shellIdleTimeoutSeconds: parseShellIdleTimeout(pi.getFlag("ssh-tmux-shell-timeout")),
 		};
 		resolved = await createRemoteState(config, localCwd);
+		registerSshTmuxToolsAndCommands();
+		pi.setActiveTools([
+			...new Set([
+				...pi.getActiveTools(),
+				"read",
+				"write",
+				"edit",
+				"bash",
+				"local_read",
+				"local_write",
+				"local_edit",
+				"local_bash",
+			]),
+		]);
 
 		ctx.ui.setStatus("ssh-tmux", ctx.ui.theme.fg("accent", `SSH tmux: ${config.remote}:${config.remoteCwd} (${config.session})`));
 		ctx.ui.notify(`SSH tmux mode: ${config.remote}:${config.remoteCwd} (${config.session})`, "info");

@@ -21,7 +21,7 @@ The extension creates or reuses a remote tmux session named `pi-ssh-tmux`. If no
 
 ## What runs remotely
 
-The extension overrides these Pi tools so they execute against the remote tmux session:
+When `--ssh-tmux` is active, the extension overrides these Pi tools so they execute against the remote tmux session:
 
 - `read`
 - `write`
@@ -30,7 +30,7 @@ The extension overrides these Pi tools so they execute against the remote tmux s
 
 User `!` bash commands are also routed through the same remote tmux session.
 
-The extension also registers explicit local escape-hatch tools that call Pi's original local implementations:
+When `--ssh-tmux` is active, the extension also registers explicit local escape-hatch tools that call Pi's original local implementations without replacing them:
 
 - `local_read`
 - `local_write`
