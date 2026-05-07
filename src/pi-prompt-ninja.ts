@@ -92,6 +92,7 @@ const DEFAULT_SECTIONS: SectionSettings = {
 };
 
 const CONFIG_FILE_NAME = "prompt-sections.json";
+const APPEND_SYSTEM_FILE_NAME = "APPEND_SYSTEM.md";
 const SESSION_SETTINGS_ENTRY_TYPE = "prompt-sections-settings";
 const SCOPES: SettingsScope[] = ["session", "directory", "global"];
 const SETTING_COLUMN_WIDTH = 30;
@@ -101,9 +102,11 @@ const FULL_PROMPT_VIEWER_FIXED_LINES = 5;
 
 let sessionConfig: PromptSectionsConfig = {};
 let latestBaseSystemPrompt: string | undefined;
+let latestAppendSystemPrompt: string | undefined;
+let latestAppendScope: SettingsScope | undefined;
 
 export default function promptSections(pi: ExtensionAPI) {
-	pi.registerCommand("prompt-sections", {
+	pi.registerCommand("prompt-ninja", {
 		description: "Configure generated system prompt sections and skill visibility",
 		handler: async (_args, ctx) => {
 			await showSettings(ctx, pi);
@@ -116,7 +119,9 @@ export default function promptSections(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event) => {
 		latestBaseSystemPrompt = event.systemPrompt;
-		const promptSections = splitSystemPrompt(event.systemPrompt, event.systemPromptOptions);
+		latestAppendSystemPrompt = event.systemPromptOptions.appendSystemPrompt;
+		latestAppendScope = detectAppendScope(event.systemPromptOptions.cwd, latestAppendSystemPrompt);
+		const promptSections = splitSystemPrompt(event.systemPrompt, latestAppendSystemPrompt);
 		const sectionSettings = effectiveSections(event.systemPromptOptions.cwd);
 		const withoutDisabledSections = removeDisabledSections(event.systemPrompt, promptSections, sectionSettings);
 		const filtered = filterSkillsInExistingPrompt(withoutDisabledSections, event.systemPromptOptions);
@@ -125,12 +130,12 @@ export default function promptSections(pi: ExtensionAPI) {
 	});
 }
 
-function splitSystemPrompt(systemPrompt: string, options?: BuildSystemPromptOptions): PromptSection[] {
+function splitSystemPrompt(systemPrompt: string, appendSystemPrompt?: string): PromptSection[] {
 	const markers: Array<{ name: PromptSectionName; start: number }> = [];
 	addMarker(markers, systemPrompt, "tools", "Available tools:");
 	addMarker(markers, systemPrompt, "guidelines", "Guidelines:");
 	addMarker(markers, systemPrompt, "piDocumentation", "Pi documentation");
-	if (options?.appendSystemPrompt) addMarker(markers, systemPrompt, "appendSection", options.appendSystemPrompt);
+	if (appendSystemPrompt) addMarker(markers, systemPrompt, "appendSection", appendSystemPrompt);
 	addMarker(markers, systemPrompt, "projectContext", "# Project Context");
 	addMarker(markers, systemPrompt, "skills", "The following skills provide specialized instructions for specific tasks.");
 	addRuntimeContextMarker(markers, systemPrompt);
@@ -178,7 +183,7 @@ function removePromptRange(systemPrompt: string, start: number, end: number): st
 }
 
 function promptSectionText(name: PromptSectionName): string | undefined {
-	return latestBaseSystemPrompt ? splitSystemPrompt(latestBaseSystemPrompt).find((section) => section.name === name)?.text : undefined;
+	return latestBaseSystemPrompt ? splitSystemPrompt(latestBaseSystemPrompt, latestAppendSystemPrompt).find((section) => section.name === name)?.text : undefined;
 }
 
 function filterSkillsInExistingPrompt(systemPrompt: string, options: BuildSystemPromptOptions) {
@@ -197,13 +202,17 @@ function filterSkillsInPrompt(systemPrompt: string, skills: Skill[], allowedSkil
 }
 
 async function showSettings(ctx: ExtensionCommandContext, pi: Pick<ExtensionAPI, "appendEntry">): Promise<void> {
+	const resources = await loadPromptResources(ctx.cwd);
+	latestAppendSystemPrompt = resources.appendSystemPrompt;
+	latestAppendScope = resources.appendScope;
+
 	const currentSystemPrompt = ctx.getSystemPrompt();
-	const currentPromptSections = splitSystemPrompt(currentSystemPrompt);
+	const currentPromptSections = splitSystemPrompt(currentSystemPrompt, latestAppendSystemPrompt);
 	if (!latestBaseSystemPrompt || currentPromptSections.some((section) => section.name === "piDocumentation")) {
 		latestBaseSystemPrompt = currentSystemPrompt;
 	}
 
-	const skills = await loadSkills(ctx.cwd);
+	const skills = resources.skills;
 	const configs = loadScopedConfigs(ctx.cwd);
 	const saveScope = (scope: SettingsScope) => saveScopedConfig(scope, ctx.cwd, configs[scope], pi);
 
@@ -243,13 +252,13 @@ function mainRows(
 			id: "fullPrompt",
 			label: "Full system prompt",
 			description: "Enter opens the full effective system prompt preview. In preview, press p to hide or show disabled parts.",
-			previewLines: (width) => fullSystemPromptPreviewLines(basePrompt, configs, skills, width),
+			previewLines: (width) => fullSystemPromptPreviewLines(basePrompt, latestAppendSystemPrompt, configs, skills, width),
 			previewLineLimit: 12,
 			effective: () => "preview",
 			open: (done) => createFullPromptViewer(
 				(width, hideDisabledParts) => hideDisabledParts
-					? enabledSystemPromptPreviewLines(basePrompt, configs, skills, width)
-					: fullSystemPromptPreviewLines(basePrompt, configs, skills, width),
+					? enabledSystemPromptPreviewLines(basePrompt, latestAppendSystemPrompt, configs, skills, width)
+					: fullSystemPromptPreviewLines(basePrompt, latestAppendSystemPrompt, configs, skills, width),
 				theme,
 				fullPageSize,
 				done,
@@ -265,8 +274,9 @@ function promptSectionRows(configs: ScopedConfigs, saveScope: (scope: SettingsSc
 		label: section.label,
 		description: section.description,
 		preview: () => promptSectionText(section.name) ?? "",
-		effective: () => onOff(resolveSection(configs, section.name)),
+		effective: () => section.name === "appendSection" ? appendEffective(configs) : onOff(resolveSection(configs, section.name)),
 		cell: (scope) => sectionCell(configs[scope], section.name),
+		cellText: section.name === "appendSection" ? (scope) => appendCellText(configs[scope], scope) : undefined,
 		setCell: (scope, state) => {
 			setSectionCell(configs[scope], section.name, state);
 			saveScope(scope);
@@ -476,8 +486,8 @@ function renderPreview(lines: string[], row: MatrixRow, width: number, theme: Th
 	lines.push(truncate(rule, width));
 }
 
-function fullSystemPromptPreviewLines(basePrompt: string, configs: ScopedConfigs, skills: Skill[], width: number): string[] {
-	const sections = splitSystemPrompt(basePrompt);
+function fullSystemPromptPreviewLines(basePrompt: string, appendSystemPrompt: string | undefined, configs: ScopedConfigs, skills: Skill[], width: number): string[] {
+	const sections = splitSystemPrompt(basePrompt, appendSystemPrompt);
 	const allowedSkills = effectiveAllowedSkillNames(configs, skills);
 	const allSkillsDisabled = configurableSkills(skills).length > 0 && allowedSkills.size === 0;
 	const skillBlocks = allSkillsDisabled ? [] : skillPromptBlocks(sections.find((section) => section.name === "skills"), allowedSkills);
@@ -488,12 +498,12 @@ function fullSystemPromptPreviewLines(basePrompt: string, configs: ScopedConfigs
 	});
 }
 
-function enabledSystemPromptPreviewLines(basePrompt: string, configs: ScopedConfigs, skills: Skill[], width: number): string[] {
-	return fullSystemPromptPreviewLines(effectiveSystemPrompt(basePrompt, configs, skills), configs, skills, width);
+function enabledSystemPromptPreviewLines(basePrompt: string, appendSystemPrompt: string | undefined, configs: ScopedConfigs, skills: Skill[], width: number): string[] {
+	return fullSystemPromptPreviewLines(effectiveSystemPrompt(basePrompt, appendSystemPrompt, configs, skills), appendSystemPrompt, configs, skills, width);
 }
 
-function effectiveSystemPrompt(basePrompt: string, configs: ScopedConfigs, skills: Skill[]): string {
-	const promptWithSectionsRemoved = removeDisabledSections(basePrompt, splitSystemPrompt(basePrompt), resolvedSections(configs));
+function effectiveSystemPrompt(basePrompt: string, appendSystemPrompt: string | undefined, configs: ScopedConfigs, skills: Skill[]): string {
+	const promptWithSectionsRemoved = removeDisabledSections(basePrompt, splitSystemPrompt(basePrompt, appendSystemPrompt), resolvedSections(configs));
 	return filterSkillsInPrompt(promptWithSectionsRemoved, skills, effectiveAllowedSkillNames(configs, skills));
 }
 
@@ -600,6 +610,17 @@ function formatRow(row: MatrixRow, selected: boolean, width: number): string {
 
 function formatCell(value: CellState | string): string {
 	return pad(value === "unset" || value === "" ? "—" : value, SCOPE_COLUMN_WIDTH);
+}
+
+function appendEffective(configs: ScopedConfigs): string {
+	if (!resolveSection(configs, "appendSection")) return "off";
+	return latestAppendSystemPrompt ? "active" : "inactive";
+}
+
+function appendCellText(config: PromptSectionsConfig, scope: SettingsScope): string {
+	const state = sectionCell(config, "appendSection");
+	if (latestAppendScope !== scope) return state;
+	return state === "unset" ? "active" : `active/${state}`;
 }
 
 function pad(text: string, width: number): string {
@@ -792,11 +813,24 @@ function isSessionSettingsEntry(entry: unknown): entry is { type: "custom"; cust
 	return isObject(entry) && entry.type === "custom" && entry.customType === SESSION_SETTINGS_ENTRY_TYPE && isObject(entry.data);
 }
 
-async function loadSkills(cwd: string): Promise<Skill[]> {
+async function loadPromptResources(cwd: string): Promise<{ skills: Skill[]; appendSystemPrompt?: string; appendScope?: SettingsScope }> {
 	const agentDir = getAgentDir();
 	const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager: SettingsManager.create(cwd, agentDir) });
 	await resourceLoader.reload();
-	return resourceLoader.getSkills().skills;
+	const appendPrompts = resourceLoader.getAppendSystemPrompt();
+	const appendSystemPrompt = appendPrompts.length > 0 ? appendPrompts.join("\n\n") : undefined;
+	return {
+		skills: resourceLoader.getSkills().skills,
+		appendSystemPrompt,
+		appendScope: detectAppendScope(cwd, appendSystemPrompt),
+	};
+}
+
+function detectAppendScope(cwd: string, appendSystemPrompt: string | undefined): SettingsScope | undefined {
+	if (!appendSystemPrompt) return undefined;
+	if (existsSync(directoryAppendPath(cwd))) return "directory";
+	if (existsSync(globalAppendPath())) return "global";
+	return "session";
 }
 
 function globalConfigPath(): string {
@@ -805,6 +839,14 @@ function globalConfigPath(): string {
 
 function directoryConfigPath(cwd: string): string {
 	return join(cwd, ".pi", CONFIG_FILE_NAME);
+}
+
+function globalAppendPath(): string {
+	return join(getAgentDir(), APPEND_SYSTEM_FILE_NAME);
+}
+
+function directoryAppendPath(cwd: string): string {
+	return join(cwd, ".pi", APPEND_SYSTEM_FILE_NAME);
 }
 
 function readConfig(path: string): PromptSectionsConfig {

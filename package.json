@@ -1,7 +1,7 @@
 {
-  "name": "pi-custom-prompt-sections",
+  "name": "pi-prompt-ninja",
   "version": "0.1.0",
-  "description": "Pi extension for enabling and disabling generated system prompt sections.",
+  "description": "Pi extension with tools for customizing the pi system prompt",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -9,10 +9,11 @@
   ],
   "pi": {
     "extensions": [
-      "./src/custom-prompt-sections.ts"
+      "./src/pi-prompt-ninja.ts"
     ]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*"
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
   }
 }
