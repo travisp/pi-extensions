@@ -103,6 +103,7 @@ const EFFECTIVE_COLUMN_WIDTH = 14;
 const SCOPE_COLUMN_WIDTH = 14;
 const SETTINGS_MATRIX_FIXED_LINES = 34;
 const FULL_PROMPT_VIEWER_FIXED_LINES = 5;
+const SKILL_BLOCK_PATTERN = /  <skill>[\s\S]*?  <\/skill>/g;
 
 let sessionConfig: PromptSectionsConfig = {};
 let latestBaseSystemPrompt: string | undefined;
@@ -247,7 +248,7 @@ function mainRows(
 		description: "Enter opens individual skills.",
 		preview: () => promptSectionText("skills") ?? formatSkillsForPrompt(configurableSkills(skills)),
 		effective: () => skillsSummary(skills, effectiveAllowedSkillNames(configs, skills)),
-		cellText: (scope) => skillScopeSummary(configs[scope]),
+		cellText: (scope) => skillScopeSummaryForSkills(configs[scope], configurableSkills(skills)),
 		open: (done) => createSkillsMatrix(skills, configs, saveScope, done, theme, matrixHeight),
 	};
 	const skillsRowIndex = sectionRows.findIndex((row) => row.id === "skills");
@@ -312,7 +313,7 @@ function createSkillsMatrix(
 			id: skill.name,
 			label: `  ${skill.name}`,
 			description: skill.description,
-			preview: () => formatSkillsForPrompt([skill]),
+			preview: () => skillPromptBlock(skill),
 			effective: () => onOff(effectiveSkillEnabled(configs, skill.name)),
 			cell: (scope) => skillCell(configs[scope], skill.name),
 			setCell: (scope, state) => {
@@ -623,8 +624,7 @@ function previewLabel(
 function skillPromptBlocks(section: PromptSection | undefined, allowedSkills: Set<string>): Array<{ start: number; end: number; label: string }> {
 	if (!section) return [];
 	const blocks: Array<{ start: number; end: number; label: string }> = [];
-	const skillBlock = /  <skill>[\s\S]*?  <\/skill>/g;
-	for (const match of section.text.matchAll(skillBlock)) {
+	for (const match of section.text.matchAll(SKILL_BLOCK_PATTERN)) {
 		const skillName = match[0].match(/<name>(.*?)<\/name>/)![1];
 		const start = section.start + match.index!;
 		blocks.push({
@@ -634,6 +634,10 @@ function skillPromptBlocks(section: PromptSection | undefined, allowedSkills: Se
 		});
 	}
 	return blocks;
+}
+
+function skillPromptBlock(skill: Skill): string {
+	return formatSkillsForPrompt([skill]).match(SKILL_BLOCK_PATTERN)![0].replace(/^  /gm, "");
 }
 
 function plainPreviewLines(text: string, width: number): string[] {
@@ -805,15 +809,6 @@ function skillsSummary(skills: Skill[], allowedSkills: Set<string>): string {
 	const skillNames = configurableSkills(skills).map((skill) => skill.name);
 	const visibleCount = skillNames.filter((name) => allowedSkills.has(name)).length;
 	return `${visibleCount}/${skillNames.length} visible`;
-}
-
-function skillScopeSummary(config: PromptSectionsConfig): string {
-	const settings = config.skills;
-	if (!settings) return "";
-
-	const allowCount = settings.allow?.length ?? 0;
-	const denyCount = settings.deny?.length ?? 0;
-	return formatSkillScopeSummary(settings, allowCount, denyCount);
 }
 
 function skillScopeSummaryForSkills(config: PromptSectionsConfig, skills: Skill[]): string {
