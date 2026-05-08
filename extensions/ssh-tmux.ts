@@ -21,7 +21,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
 	type BashOperations,
 	createBashTool,
@@ -56,9 +56,28 @@ type RunOptions = {
 	audit?: string;
 };
 
+type AttachContextKind = "transcript" | "summary";
+
+type AttachContextDetails = {
+	kind: AttachContextKind;
+	lineCount: number;
+};
+
 const DEFAULT_SESSION = "pi-ssh-tmux";
 const DEFAULT_SHELL_IDLE_TIMEOUT_SECONDS = 24 * 60 * 60;
 const POLL_INTERVAL_MS = 120;
+const ATTACH_CONTEXT_TYPE = "ssh-tmux-attach-context";
+const ATTACH_SUMMARY_PROMPT =
+	"Summarize this terminal transcript for a coding agent. Focus on commands run, files changed, errors, decisions, and current state.";
+const SSH_NONINTERACTIVE_ARGS = [
+	"-o",
+	"BatchMode=yes",
+	"-o",
+	"StrictHostKeyChecking=accept-new",
+	"-o",
+	"ConnectTimeout=10",
+];
+const SSH_INTERACTIVE_ARGS = ["-o", "StrictHostKeyChecking=accept-new"];
 const SSH_TMUX_TOOL_NAMES = [
 	"read",
 	"write",
@@ -162,7 +181,9 @@ function repaintTuiWithoutClearingScrollback(tui: unknown): void {
 function sshExec(remote: string, command: string, input?: Buffer | string): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
 		const stdin = input === undefined ? "ignore" : "pipe";
-		const child = spawn("ssh", [remote, command], { stdio: [stdin, "pipe", "pipe"] });
+		const child = spawn("ssh", [...SSH_NONINTERACTIVE_ARGS, remote, command], {
+			stdio: [stdin, "pipe", "pipe"],
+		});
 		const chunks: Buffer[] = [];
 		const errChunks: Buffer[] = [];
 		child.stdout.on("data", (data) => chunks.push(Buffer.from(data)));
@@ -202,6 +223,96 @@ async function resolveRemoteCwd(remote: string, requested?: string): Promise<str
 	if (!requested) return (await sshExec(remote, "pwd")).toString().trim();
 	const expr = shQuotePathAllowTilde(requested);
 	return (await sshExec(remote, `mkdir -p ${expr} && cd ${expr} && pwd`)).toString().trim();
+}
+
+function extractNewPaneContent(before: string, after: string): string {
+	if (after.startsWith(before)) return after.slice(before.length).trim();
+
+	const beforeLines = before.split("\n");
+	const afterLines = after.split("\n");
+	let firstNewLine = 0;
+	while (firstNewLine < beforeLines.length && beforeLines[firstNewLine] === afterLines[firstNewLine]) {
+		firstNewLine++;
+	}
+	return afterLines.slice(firstNewLine).join("\n").trim();
+}
+
+function formatAttachContext(kind: AttachContextKind, text: string): string {
+	const title = kind === "summary" ? "SSH tmux attach summary" : "SSH tmux attach transcript";
+	return `# ${title}\n\nThe user manually attached to the remote tmux session before this point.\n\n${text}`;
+}
+
+function visibleLength(text: string): number {
+	return stripAnsi(text).length;
+}
+
+function boxLine(text: string, width: number, theme: Theme): string {
+	const line = ` ${text}`;
+	return theme.bg("customMessageBg", line + " ".repeat(Math.max(0, width - visibleLength(line))));
+}
+
+function createAttachContextRenderer(message: { content: unknown; details?: AttachContextDetails }, expanded: boolean, theme: Theme) {
+	const { kind, lineCount } = message.details!;
+	const title = theme.fg("customMessageLabel", `\x1b[1m[ssh-tmux attach ${kind}]\x1b[22m`);
+	const collapsed =
+		theme.fg("customMessageText", `Captured ${lineCount.toLocaleString()} line${lineCount === 1 ? "" : "s"} from tmux attach (`) +
+		theme.fg("dim", "Ctrl+O") +
+		theme.fg("customMessageText", " to expand)");
+
+	return {
+		invalidate() {},
+		render(width: number): string[] {
+			const body = expanded ? String(message.content) : collapsed;
+			return [
+				boxLine("", width, theme),
+				boxLine(title, width, theme),
+				boxLine("", width, theme),
+				...body.split("\n").map((line) => boxLine(theme.fg("customMessageText", line), width, theme)),
+				boxLine("", width, theme),
+			];
+		},
+	};
+}
+
+async function summarizeAttachTranscript(transcript: string, ctx: ExtensionCommandContext): Promise<string | undefined> {
+	const model = ctx.model;
+	if (!model) {
+		ctx.ui.notify("No model selected; attach transcript was not added", "warning");
+		return undefined;
+	}
+
+	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	if (!auth.ok || !auth.apiKey) {
+		ctx.ui.notify("No API key available; attach transcript was not added", "warning");
+		return undefined;
+	}
+
+	ctx.ui.notify("Summarizing tmux attach transcript...", "info");
+	const { complete } = await import("@earendil-works/pi-ai");
+	const response = await complete(
+		model,
+		{
+			messages: [
+				{
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: `${ATTACH_SUMMARY_PROMPT}\n\n${transcript}`,
+						},
+					],
+					timestamp: Date.now(),
+				},
+			],
+		},
+		{ apiKey: auth.apiKey, headers: auth.headers },
+	);
+
+	return response.content
+		.filter((content): content is { type: "text"; text: string } => content.type === "text")
+		.map((content) => content.text)
+		.join("\n")
+		.trim();
 }
 
 class SshTmuxSession {
@@ -342,6 +453,10 @@ class SshTmuxSession {
 	private async sendKeys(...keys: string[]): Promise<void> {
 		const quoted = keys.map(shQuote).join(" ");
 		await sshExec(this.config.remote, `tmux send-keys -t ${shQuote(this.config.session)} ${quoted}`);
+	}
+
+	async captureText(): Promise<string> {
+		return stripAnsi((await this.capture()).toString("utf8"));
 	}
 
 	private async capture(): Promise<Buffer> {
@@ -538,6 +653,10 @@ export default function (pi: ExtensionAPI) {
 		type: "string",
 	});
 
+	pi.registerMessageRenderer<AttachContextDetails>(ATTACH_CONTEXT_TYPE, (message, { expanded }, theme) =>
+		createAttachContextRenderer(message, expanded, theme),
+	);
+
 	const localCwd = process.cwd();
 	const localReadDefinition = createReadToolDefinition(localCwd);
 	const localWriteDefinition = createWriteToolDefinition(localCwd);
@@ -548,16 +667,61 @@ export default function (pi: ExtensionAPI) {
 	const localEdit = createEditTool(localCwd);
 	const localBash = createBashTool(localCwd);
 	let resolved: RemoteState | null = null;
-	let sshTmuxRegistered = false;
+	let sshTmuxToolsRegistered = false;
+	let sshTmuxCommandsRegistered = false;
 
 	const requireRemote = (): RemoteState => {
 		if (!resolved) throw new Error("--ssh-tmux is not active");
 		return resolved;
 	};
 
-	const registerSshTmuxToolsAndCommands = () => {
-		if (sshTmuxRegistered) return;
-		sshTmuxRegistered = true;
+	const getActiveRemote = (ctx: ExtensionCommandContext): RemoteState | null => {
+		if (resolved) return resolved;
+		ctx.ui.notify("No --ssh-tmux session is active", "warning");
+		return null;
+	};
+
+	const addAttachContext = (kind: AttachContextKind, text: string, lineCount: number) => {
+		pi.sendMessage<AttachContextDetails>({
+			customType: ATTACH_CONTEXT_TYPE,
+			content: formatAttachContext(kind, text),
+			display: true,
+			details: { kind, lineCount },
+		});
+	};
+
+	const handleAttachTranscript = async (ctx: ExtensionCommandContext, transcript: string) => {
+		const trimmed = transcript.trim();
+		if (!trimmed) return;
+
+		const lineCount = trimmed.split("\n").length;
+		const choice = await ctx.ui.select(`Captured ${lineCount} line${lineCount === 1 ? "" : "s"} from tmux attach`, [
+			"discard",
+			"add to context",
+			"summarize then add",
+		]);
+
+		switch (choice) {
+			case "add to context":
+				addAttachContext("transcript", trimmed, lineCount);
+				ctx.ui.notify("Attach transcript added to context", "info");
+				return;
+			case "summarize then add":
+				try {
+					const summary = await summarizeAttachTranscript(trimmed, ctx);
+					if (summary) {
+						addAttachContext("summary", summary, lineCount);
+						ctx.ui.notify("Attach summary added to context", "info");
+					}
+				} catch (error) {
+					ctx.ui.notify(`Failed to summarize attach transcript: ${error instanceof Error ? error.message : String(error)}`, "warning");
+				}
+		}
+	};
+
+	const registerSshTmuxTools = () => {
+		if (sshTmuxToolsRegistered) return;
+		sshTmuxToolsRegistered = true;
 
 		pi.registerTool({
 			...localReadDefinition,
@@ -634,11 +798,17 @@ export default function (pi: ExtensionAPI) {
 				return localBash.execute(id, params, signal, onUpdate);
 			},
 		});
+	};
+
+	const registerSshTmuxCommands = () => {
+		if (sshTmuxCommandsRegistered) return;
+		sshTmuxCommandsRegistered = true;
 
 		pi.registerCommand("ssh-tmux-attach", {
 			description: "Suspend Pi and attach this terminal to the remote SSH tmux session",
 			handler: async (_args, ctx) => {
-				const remote = requireRemote();
+				const remote = getActiveRemote(ctx);
+				if (!remote) return;
 				if (!ctx.hasUI) {
 					ctx.ui.notify("/ssh-tmux-attach requires interactive mode", "warning");
 					return;
@@ -650,6 +820,7 @@ export default function (pi: ExtensionAPI) {
 				const { config } = remote;
 				await sshExec(config.remote, `tmux send-keys -t ${shQuote(config.session)} ${shQuote("stty echo; export PS1='[pi-ssh-tmux]$ '")} C-m`);
 				await sleep(150);
+				const beforeAttach = await remote.context.session.captureText();
 
 				const exitCode = await ctx.ui.custom<number | null>((tui, _theme, _kb, done) => {
 					tui.stop();
@@ -659,7 +830,9 @@ export default function (pi: ExtensionAPI) {
 
 					let status: number | null = null;
 					try {
-						status = spawnSync("ssh", ["-tt", config.remote, `tmux attach -t ${shQuote(config.session)}`], { stdio: "inherit" }).status;
+						status = spawnSync("ssh", ["-tt", ...SSH_INTERACTIVE_ARGS, config.remote, `tmux attach -t ${shQuote(config.session)}`], {
+							stdio: "inherit",
+						}).status;
 					} finally {
 						resetTerminalScrollbackModes();
 						tui.start();
@@ -669,6 +842,9 @@ export default function (pi: ExtensionAPI) {
 					return { render: () => [], invalidate: () => {} };
 				});
 
+				const afterAttach = await remote.context.session.captureText();
+				await handleAttachTranscript(ctx, extractNewPaneContent(beforeAttach, afterAttach));
+
 				if (exitCode === 0) ctx.ui.notify("Returned from SSH tmux session", "info");
 				else ctx.ui.notify(`SSH tmux attach exited with code ${exitCode ?? "unknown"}`, "warning");
 			},
@@ -677,7 +853,8 @@ export default function (pi: ExtensionAPI) {
 		pi.registerCommand("ssh-tmux-kill", {
 			description: "Kill the remote SSH tmux session used by this extension",
 			handler: async (_args, ctx) => {
-				const remote = requireRemote();
+				const remote = getActiveRemote(ctx);
+				if (!remote) return;
 				await ctx.waitForIdle();
 				const { config } = remote;
 				await sshExec(config.remote, `tmux kill-session -t ${shQuote(config.session)}`);
@@ -699,20 +876,28 @@ export default function (pi: ExtensionAPI) {
 		const arg = pi.getFlag("ssh-tmux") as string | undefined;
 		if (!arg) return;
 
-		const parsed = parseSshTmuxArg(arg);
-		const remoteCwd = await resolveRemoteCwd(parsed.remote, parsed.remoteCwd);
-		const config: SshTmuxConfig = {
-			remote: parsed.remote,
-			remoteCwd,
-			session: parseTmuxName(pi.getFlag("tmux-name")),
-			shellIdleTimeoutSeconds: parseShellIdleTimeout(pi.getFlag("ssh-tmux-shell-timeout")),
-		};
-		resolved = await createRemoteState(config, localCwd);
-		registerSshTmuxToolsAndCommands();
+		registerSshTmuxCommands();
+		registerSshTmuxTools();
 		pi.setActiveTools([...new Set([...pi.getActiveTools(), ...SSH_TMUX_TOOL_NAMES])]);
 
-		setSshTmuxStatus(ctx);
-		ctx.ui.notify(`SSH tmux mode: ${config.remote}:${config.remoteCwd} (${config.session})`, "info");
+		try {
+			const parsed = parseSshTmuxArg(arg);
+			const remoteCwd = await resolveRemoteCwd(parsed.remote, parsed.remoteCwd);
+			const config: SshTmuxConfig = {
+				remote: parsed.remote,
+				remoteCwd,
+				session: parseTmuxName(pi.getFlag("tmux-name")),
+				shellIdleTimeoutSeconds: parseShellIdleTimeout(pi.getFlag("ssh-tmux-shell-timeout")),
+			};
+			resolved = await createRemoteState(config, localCwd);
+			setSshTmuxStatus(ctx);
+			ctx.ui.notify(`SSH tmux mode: ${config.remote}:${config.remoteCwd} (${config.session})`, "info");
+		} catch (error) {
+			resolved = null;
+			const message = error instanceof Error ? error.message : String(error);
+			ctx.ui.setStatus("ssh-tmux", ctx.ui.theme.fg("warning", `SSH tmux failed: ${arg}`));
+			ctx.ui.notify(`SSH tmux failed: ${message}`, "warning");
+		}
 	});
 
 	pi.on("session_switch", (_event, ctx) => {

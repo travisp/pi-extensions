@@ -2,6 +2,8 @@
 
 Pi extension for routing Pi tool execution to a remote host through a persistent single-pane `tmux` session over SSH.
 
+Note: warning, this is a lot of slop!
+
 ## Usage
 
 ```bash
@@ -10,15 +12,17 @@ pi -e /path/to/pi-ssh-tmux --ssh-tmux user@host
 pi -e /path/to/pi-ssh-tmux --ssh-tmux user@host --tmux-name pi-work
 ```
 
-The extension creates or reuses a remote tmux session named `pi-ssh-tmux` by default. Use `--tmux-name` to choose a different session. If no remote path is provided, it uses the remote login directory.
+The extension is inactive unless `--ssh-tmux` is passed. With `--ssh-tmux`, it creates or reuses a remote tmux session named `pi-ssh-tmux` by default. Use `--tmux-name` to choose a different session. If no remote path is provided, it uses the remote login directory.
 
 ## Remote requirements
 
 - SSH key-based auth
+- a loaded `ssh-agent` if your key needs a passphrase
 - `tmux`
-- `bash`
 - `base64`
 - `file`
+
+Tool setup and execution use non-interactive SSH with `BatchMode=yes`, `StrictHostKeyChecking=accept-new`, and a 10 second connect timeout. New host keys are accepted automatically; changed host keys, password prompts, and other interactive SSH prompts fail and are reported in Pi as an SSH tmux warning/status instead of hanging invisibly.
 
 ## What runs remotely
 
@@ -60,15 +64,21 @@ The shell timeout is implemented with bash `TMOUT`, so it applies when the shell
 
 ## Slash commands
 
+These commands are only registered when `--ssh-tmux` is passed.
+
 ```text
 /ssh-tmux-attach
     Suspend Pi and attach this terminal to the remote tmux session.
     Detach with Ctrl-b then plain d to return to Pi.
+    When you return, Pi asks what to do with captured attach output:
+    discard, add to context, or summarize then add. Discard is first/default.
 
 /ssh-tmux-kill
     Kill the remote tmux session used by this extension.
     The next Pi tool call recreates it if --ssh-tmux is still active.
 ```
+
+Attach output added to context appears immediately as a visible, expandable custom message. Summarization uses the current Pi model and API credentials; if no model or API key is available, Pi warns and adds nothing. Only attach sessions started through `/ssh-tmux-attach` are offered for capture. Output can include secrets, so choose `discard` unless you want the transcript or summary available to the model.
 
 ## On-demand sudo
 
