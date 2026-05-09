@@ -1,143 +1,153 @@
-# pi-ssh-tmux
+# pi-remote-admin
 
-Pi extension for routing Pi tool execution to a remote host through a persistent single-pane `tmux` session over SSH.
+Pi extension for running Pi's normal `read`, `write`, `edit`, and `bash` tools on a remote host over SSH while Pi itself keeps running locally.
 
-Note: warning, this is a lot of slop!
+Pi config, skills, API keys, model providers, and `local_*` tools remain local. The remote server does **not** need Pi installed.
 
 ## Usage
 
 ```bash
-pi -e /path/to/pi-ssh-tmux --ssh-tmux user@host:/remote/workdir
-pi -e /path/to/pi-ssh-tmux --ssh-tmux user@host
-pi -e /path/to/pi-ssh-tmux --ssh-tmux user@host --tmux-name pi-work
+pi -e /path/to/pi-remote-admin --host debian@1.2.3.4 --cwd /srv/app
+pi -e /path/to/pi-remote-admin --host 1.2.3.4 --user debian --port 2222 --cwd /srv/app
+pi -e /path/to/pi-remote-admin --host debian@1.2.3.4 --cwd /srv/app --elevation ask-session --elevation-ttl 30m
 ```
 
-The extension is inactive unless `--ssh-tmux` is passed. With `--ssh-tmux`, it creates or reuses a remote tmux session named `pi-ssh-tmux` by default. Use `--tmux-name` to choose a different session. If no remote path is provided, it uses the remote login directory.
+The extension is inactive unless `--host` is passed.
 
 ## Remote requirements
 
-- SSH key-based auth
-- a loaded `ssh-agent` if your key needs a passphrase
-- `tmux`
-- `base64`
-- `file`
+- SSH key-based auth from the local Pi machine
+- `/bin/sh` by default, or the shell specified with `--shell`
+- standard Debian-like tools: `cat`, `mv`, `mkdir`, `rm`, `mktemp`, `base64`, `chmod`, `chown`, and `stat`
 
-Tool setup and execution use non-interactive SSH with `BatchMode=yes`, `StrictHostKeyChecking=accept-new`, and a 10 second connect timeout. New host keys are accepted automatically; changed host keys, password prompts, and other interactive SSH prompts fail and are reported in Pi as an SSH tmux warning/status instead of hanging invisibly.
+No `tmux`, Python, Node, Perl, or Pi installation is required on the remote host.
 
-## What runs remotely
+## How it works
 
-When `--ssh-tmux` is active, the extension overrides these Pi tools so they execute against the remote tmux session:
+`pi-remote-admin` starts one persistent non-PTY SSH process per remote target:
+
+```text
+ssh -T user@host /bin/sh
+```
+
+Each command is queued and wrapped with a random high-entropy sentinel line. The transport reads output until the exact sentinel line for that command appears. Timeouts kill the SSH process; the next command starts a fresh transport.
+
+File reads and writes use base64 through the shell stream, so binary files are not sent as raw terminal data. The default maximum file size is 25 MiB; configure with `--max-file-bytes`.
+
+## Tool mapping
+
+When active, these default Pi tools operate on the remote host:
 
 - `read`
 - `write`
 - `edit`
 - `bash`
 
-User `!` bash commands are also routed through the same remote tmux session.
+User `!` bash commands also run remotely.
 
-When `--ssh-tmux` is active, the extension also registers explicit local escape-hatch tools that call Pi's original local implementations without replacing them:
+Local escape hatches are always available when the extension is active:
 
 - `local_read`
 - `local_write`
 - `local_edit`
 - `local_bash`
 
-Use these for local Pi infrastructure, such as scripts under `~/.pi/agent/skills`.
+Use them for files and commands on the machine where Pi is running, such as `~/.pi/agent/skills`.
 
-During normal Pi tool execution, the tmux pane keeps shell echo disabled for reliable command framing, but prints human-readable audit lines like `[pi bash] ...`, `[pi read] ...`, and `[pi write] ...` so you can review what Pi is doing without dumping internal base64 payloads into scrollback.
+## Elevation
+
+Elevation is disabled by default. Enable approval-based elevation with:
+
+```bash
+--elevation ask-session --elevation-ttl 30m
+```
+
+Then approve it with either:
+
+```text
+/remote-admin-elevate
+```
+
+or the `remote_admin_elevate` tool when the agent needs privileged access.
+
+After approval, the extension starts a second persistent SSH transport running a root shell via sudo. It does **not** turn the normal SSH transport into root.
+
+Security properties:
+
+- the sudo password is prompted locally with echo disabled
+- the password is never passed in command-line args or environment variables
+- the password is never written to disk
+- the password is never shown to the model or logged
+- if sudo is NOPASSWD, no password line is sent to the root shell
+- the password is discarded after the elevated shell starts
+- the elevated transport is killed when the TTL expires or when revoked
+
+While the elevated session is active, the default remote tools use the root transport. Revoke with:
+
+```text
+/remote-admin-revoke
+```
+
+If an operation fails with permission denied while elevation is inactive, the tool error tells the agent/user to request elevation and retry.
 
 ## Flags
 
 ```text
---ssh-tmux user@host[:/remote/path]
-    Enable remote execution through SSH + tmux.
+--host <ssh-host>
+    Remote SSH host. May include user@host.
 
---tmux-name <session-name>
-    Remote tmux session name. Default: pi-ssh-tmux.
+--user <user>
+    SSH user when --host does not include user@.
 
---ssh-tmux-shell-timeout <seconds>
-    Idle timeout for the remote bash shell. Default: 86400 seconds (one day).
-    Use 0 to disable the shell idle timeout.
+--port <port>
+    SSH port.
+
+--cwd <remote-cwd>
+    Remote working directory. Defaults to the remote shell's current directory.
+
+--shell </bin/sh|/bin/bash>
+    Remote shell. Default: /bin/sh.
+
+--max-file-bytes <bytes>
+    Maximum file size for remote read/write. Default: 26214400.
+
+--elevation off|ask-session
+    Elevation mode. Default: off.
+
+--elevation-ttl <duration>
+    Elevated session TTL. Examples: 15m, 30m, 1h. Default: 15m.
+
+--ssh-arg <arg>
+    Extra SSH arg(s). Quote as needed for your shell.
+
+--log-elevated-ops
+    Add visible summaries for elevated operations. Never logs file contents or passwords.
+
+--no-elevation
+    Force elevation off.
 ```
 
-The shell timeout is implemented with bash `TMOUT`, so it applies when the shell is idle at a prompt, whether attached or detached. It does not kill a currently running command.
+## Elevated operation logging
 
-## Slash commands
-
-These commands are only registered when `--ssh-tmux` is passed.
+When `--log-elevated-ops` is set, visible summaries are added for root operations, for example:
 
 ```text
-/ssh-tmux-attach
-    Suspend Pi and attach this terminal to the remote tmux session.
-    Detach with Ctrl-b then plain d to return to Pi.
-    When you return, Pi asks what to do with captured attach output:
-    discard, add to context, or summarize then add. Discard is first/default.
-
-/ssh-tmux-kill
-    Kill the remote tmux session used by this extension.
-    The next Pi tool call recreates it if --ssh-tmux is still active.
+[root active 28m] bash: apt update && apt install -y nginx ufw fail2ban exit 0
+[root active 27m] write: /etc/nginx/sites-available/app 1432 bytes
+[root active 26m] bash: nginx -t exit 0
+[root expired] expired: elevated transport closed
 ```
 
-Attach output added to context appears immediately as a visible, expandable custom message. Summarization uses the current Pi model and API credentials; if no model or API key is available, Pi warns and adds nothing. Only attach sessions started through `/ssh-tmux-attach` are offered for capture. Output can include secrets, so choose `discard` unless you want the transcript or summary available to the model.
+Logs never include sudo passwords or file contents.
 
-## On-demand sudo
-
-Attach to the same remote tmux session from inside Pi:
-
-```text
-/ssh-tmux-attach
-```
-
-Pi suspends while you are attached. The extension enables terminal echo for the human attach session and leaves it on after you detach. The next Pi tool execution disables echo again before sending internal payloads.
-
-For compatibility with footer/status-line extensions such as `pi-powerline-footer`, `/ssh-tmux-attach` resets terminal scroll margins, exits alternate-screen modes, and disables tmux-style mouse reporting before launching `ssh -tt ... tmux attach`, then resets them again before Pi's TUI restarts. When Pi repaints after detach, it avoids the full TUI redraw path that clears terminal scrollback, so normal mouse-wheel scrollback remains available.
-
-While attached, run:
+## Development
 
 ```bash
-sudo -v
+npm run smoke:fake-ssh
 ```
 
-Enter your password, then detach with:
+Runs a local smoke test with a fake `ssh` executable and verifies that bash/read/write/edit share one persistent transport.
 
-```text
-Ctrl-b d
-```
+## Removed tmux behavior
 
-While sudo's timestamp is valid, Pi can run `sudo -n ...` inside that same tmux session. To lock sudo again, attach and run:
-
-```bash
-sudo -k
-```
-
-Do not press `Ctrl-d` unless you intentionally want to exit the shell; it can close the only pane and end the tmux session.
-
-No sudo password is passed through Pi or the model.
-
-## Manual tmux access
-
-You can also attach from another terminal:
-
-```bash
-ssh -tt user@host 'tmux attach -t pi-ssh-tmux'
-# or, if you started Pi with --tmux-name pi-work:
-ssh -tt user@host 'tmux attach -t pi-work'
-```
-
-List or kill the session manually:
-
-```bash
-ssh user@host 'tmux ls'
-ssh user@host 'tmux kill-session -t pi-ssh-tmux'
-```
-
-## Lifecycle
-
-By default, the remote tmux session persists when Pi exits or crashes. This is intentional: it lets remote work survive local connection problems and lets you reconnect to inspect the session.
-
-Cleanup options:
-
-- wait for the shell idle timeout, default one day
-- run `/ssh-tmux-kill` inside Pi
-- manually run `tmux kill-session -t pi-ssh-tmux` on the remote (replace the name if you used `--tmux-name`)
-- disable the timeout with `--ssh-tmux-shell-timeout 0` if you want indefinite persistence
+`tmux` is no longer used for normal `read`/`write`/`edit`/`bash` execution. The old attach/capture/send-keys transport has been removed from the core path. An optional interactive console can be added later, but it should not be used as the backend for tools.
