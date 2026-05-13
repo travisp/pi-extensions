@@ -9,7 +9,6 @@
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
-import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
 	type BashOperations,
@@ -67,6 +66,7 @@ const CONNECT_TIMEOUT_MS = 10_000;
 const COMMAND_TIMEOUT_MS = 120_000;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
+const EMPTY_TOOL_PARAMETERS = { type: "object", properties: {}, additionalProperties: false } as unknown as ToolDefinition["parameters"];
 const PASSWORD_PASTE_START = "\x1b[200~";
 const PASSWORD_PASTE_END = "\x1b[201~";
 const REMOTE_ADMIN_TOOL_NAMES = ["read", "write", "edit", "bash", "local_read", "local_write", "local_edit", "local_bash", "remote_admin_elevate"];
@@ -876,7 +876,7 @@ export default function (pi: ExtensionAPI) {
 			label: "Remote Admin Elevate",
 			description: "Ask the human to approve an elevated root SSH session for remote-admin. The sudo password is prompted locally and is not shown to the model.",
 			promptSnippet: "Request human approval for an elevated remote-admin root session when privileged remote operations are required.",
-			parameters: Type.Object({}),
+			parameters: EMPTY_TOOL_PARAMETERS,
 			async execute(_id, _params, _signal, _onUpdate, ctx) {
 				const state = requireRemote();
 				await state.elevation.approve(ctx);
