@@ -94,8 +94,7 @@ function makeUi() {
 
 try {
   const result = await discoverAndLoadExtensions(['.'], process.cwd());
-  result.runtime.flagValues.set('host', 'fake');
-  result.runtime.flagValues.set('cwd', remoteCwd);
+  result.runtime.flagValues.set('ssh', `fake:${remoteCwd}`);
   const ext = result.extensions.find((e) => e.path.includes('remote-admin'));
   const runner = new ExtensionRunner([ext], result.runtime, process.cwd(), { getSessionFile: () => undefined }, { getApiKeyAndHeaders: async () => ({ ok: false }) });
   const ui = makeUi();

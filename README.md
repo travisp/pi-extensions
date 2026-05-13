@@ -7,12 +7,12 @@ Pi config, skills, API keys, model providers, and `local_*` tools remain local. 
 ## Usage
 
 ```bash
-pi -e /path/to/pi-remote-admin --host debian@1.2.3.4 --cwd /srv/app
-pi -e /path/to/pi-remote-admin --host 1.2.3.4 --user debian --port 2222 --cwd /srv/app
-pi -e /path/to/pi-remote-admin --host debian@1.2.3.4 --cwd /srv/app --elevation ask-session --elevation-ttl 30m
+pi -e /path/to/pi-remote-admin --ssh debian@1.2.3.4
+pi -e /path/to/pi-remote-admin --ssh debian@1.2.3.4:/srv/app
+pi -e /path/to/pi-remote-admin --ssh debian@1.2.3.4:/srv/app --log-elevated-ops
 ```
 
-The extension is inactive unless `--host` is passed.
+The extension is inactive unless `--ssh` is passed.
 
 ## Remote requirements
 
@@ -56,7 +56,7 @@ Use them for files and commands on the machine where Pi is running, such as `~/.
 
 ## Elevation
 
-Approval-based elevation is enabled by default with a 30 minute TTL. Approve it with either:
+Approval-based elevation is available when needed. Approve it with either:
 
 ```text
 /remote-admin-elevate
@@ -64,7 +64,14 @@ Approval-based elevation is enabled by default with a 30 minute TTL. Approve it 
 
 or the `remote_admin_elevate` tool when the agent needs privileged access.
 
-After approval, the extension starts a second persistent SSH transport running a root shell via sudo. It does **not** turn the normal SSH transport into root.
+When approval is requested, choose one of:
+
+- just for this agent response, when requested by the agent
+- just for the next agent response, when requested with `/remote-admin-elevate`
+- persistent until revoked
+- no
+
+After approval, the extension starts a second SSH transport running a root shell via sudo. It does **not** turn the normal SSH transport into root.
 
 Security properties:
 
@@ -74,7 +81,8 @@ Security properties:
 - the password is never shown to the model or logged
 - if sudo is NOPASSWD, no password line is sent to the root shell
 - the password is discarded after the elevated shell starts
-- the elevated transport is killed when the TTL expires or when revoked
+- response-scoped elevation is killed when the agent finishes responding to the current user request
+- persistent elevation is killed when revoked or when the session shuts down
 
 While the elevated session is active, the default remote tools use the root transport. Revoke with:
 
@@ -87,17 +95,9 @@ If an operation fails with permission denied while elevation is inactive, the to
 ## Flags
 
 ```text
---host <ssh-host>
-    Remote SSH host. May include user@host.
-
---user <user>
-    SSH user when --host does not include user@.
-
---port <port>
-    SSH port.
-
---cwd <remote-cwd>
-    Remote working directory. Defaults to the remote shell's current directory.
+--ssh <user@host[:remote-cwd]>
+    SSH remote. Include :/path to set the remote working directory.
+    Without a path, defaults to the remote shell's current directory.
 
 --shell </bin/sh|/bin/bash>
     Remote shell. Default: /bin/sh.
@@ -105,20 +105,12 @@ If an operation fails with permission denied while elevation is inactive, the to
 --max-file-bytes <bytes>
     Maximum file size for remote read/write. Default: 26214400.
 
---elevation off|ask-session
-    Elevation mode. Default: ask-session.
-
---elevation-ttl <duration>
-    Elevated session TTL. Examples: 30m, 1h. Default: 30m.
-
 --ssh-arg <arg>
     Extra SSH arg(s). Quote as needed for your shell.
 
 --log-elevated-ops
     Add visible summaries for elevated operations. Never logs file contents or passwords.
 
---no-elevation
-    Force elevation off.
 ```
 
 ## Elevated operation logging
@@ -126,10 +118,10 @@ If an operation fails with permission denied while elevation is inactive, the to
 When `--log-elevated-ops` is set, visible summaries are added for root operations, for example:
 
 ```text
-[root active 28m] bash: apt update && apt install -y nginx ufw fail2ban exit 0
-[root active 27m] write: /etc/nginx/sites-available/app 1432 bytes
-[root active 26m] bash: nginx -t exit 0
-[root expired] expired: elevated transport closed
+[root this agent response] bash: apt update && apt install -y nginx ufw fail2ban exit 0
+[root persistent] write: /etc/nginx/sites-available/app 1432 bytes
+[root persistent] bash: nginx -t exit 0
+[root revoked] revoked: elevated transport closed
 ```
 
 Logs never include sudo passwords or file contents.

@@ -14,19 +14,15 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme, To
 import {
 	type BashOperations,
 	createBashTool,
-	createBashToolDefinition,
 	createEditTool,
-	createEditToolDefinition,
 	createReadTool,
-	createReadToolDefinition,
 	createWriteTool,
-	createWriteToolDefinition,
 	type EditOperations,
 	type ReadOperations,
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
 
-type ElevationMode = "off" | "ask-session";
+type ElevationScope = "agent-response" | "persistent";
 
 type RemoteAdminConfig = {
 	target: string;
@@ -36,8 +32,6 @@ type RemoteAdminConfig = {
 	connectTimeoutMs: number;
 	commandTimeoutMs: number;
 	maxFileBytes: number;
-	elevation: ElevationMode;
-	elevationTtlMs: number;
 	logElevatedOps: boolean;
 };
 
@@ -86,7 +80,6 @@ type ElevatedLogEntry = {
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
-const DEFAULT_ELEVATION_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
 const PASSWORD_PASTE_START = "\x1b[200~";
@@ -113,41 +106,16 @@ function parsePositiveInt(value: unknown, defaultValue: number): number {
 	return Math.floor(parsed);
 }
 
-function parseDuration(value: unknown, defaultMs: number): number {
-	if (value === undefined || value === null || value === "") return defaultMs;
-	const text = String(value).trim();
-	const match = text.match(/^(\d+(?:\.\d+)?)(ms|s|m|h)?$/);
-	if (!match) throw new Error(`Invalid duration: ${text}`);
-	const amount = Number(match[1]);
-	const unit = match[2] ?? "m";
-	const factor = unit === "ms" ? 1 : unit === "s" ? 1000 : unit === "m" ? 60_000 : 60 * 60_000;
-	return Math.max(1, Math.floor(amount * factor));
-}
-
 function parseBool(value: unknown): boolean {
 	if (value === true) return true;
 	if (value === false || value === undefined || value === null || value === "") return false;
 	return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
 }
 
-function parseElevation(value: unknown, noElevation: unknown): ElevationMode {
-	if (parseBool(noElevation)) return "off";
-	const text = value === undefined || value === null || value === "" ? "ask-session" : String(value);
-	if (text === "off" || text === "ask-session") return text;
-	throw new Error(`Invalid --elevation value: ${text}`);
-}
-
 function splitSshArgs(value: unknown): string[] {
 	if (value === undefined || value === null || value === "") return [];
 	const values = Array.isArray(value) ? value : [value];
 	return values.flatMap((v) => String(v).trim().split(/\s+/).filter(Boolean));
-}
-
-function formatTtl(ms: number): string {
-	const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
-	const minutes = Math.floor(totalSeconds / 60);
-	const seconds = totalSeconds % 60;
-	return minutes > 0 ? `${minutes}m${seconds ? ` ${seconds}s` : ""}` : `${seconds}s`;
 }
 
 function parseSentinel(buffer: string, token: string): { output: string; exitCode: number } | null {
@@ -410,8 +378,8 @@ class SshShellTransport {
 
 class ElevationManager {
 	private transport: SshShellTransport | null = null;
-	private expiresAt = 0;
-	private expiryTimer: NodeJS.Timeout | null = null;
+	private scope: ElevationScope | null = null;
+	private responseScopeDescription = "this agent response";
 
 	constructor(
 		private readonly config: RemoteAdminConfig,
@@ -420,26 +388,24 @@ class ElevationManager {
 	) {}
 
 	isActive(): boolean {
-		return !!this.transport && this.transport.isAlive() && Date.now() < this.expiresAt;
+		return !!this.transport && this.transport.isAlive();
 	}
 
-	remainingMs(): number {
-		return this.isActive() ? this.expiresAt - Date.now() : 0;
+	describe(): string {
+		if (!this.isActive()) return "inactive";
+		return this.scope === "persistent" ? "persistent" : this.responseScopeDescription;
 	}
 
 	getTransport(): SshShellTransport | null {
 		return this.isActive() ? this.transport : null;
 	}
 
-	async approve(ctx: ExtensionCommandContext | ExtensionContext): Promise<SshShellTransport> {
-		if (this.config.elevation === "off") throw new Error("Elevation is disabled");
+	async approve(ctx: ExtensionCommandContext | ExtensionContext, responseScopeDescription = "this agent response"): Promise<SshShellTransport> {
 		if (this.isActive() && this.transport) return this.transport;
-		const ttl = formatTtl(this.config.elevationTtlMs);
-		const approved = await ctx.ui.confirm(
-			"Approve elevated remote session?",
-			`Approve root shell on ${this.config.target} for ${ttl}? The sudo password stays local and is discarded after startup.`,
-		);
-		if (!approved) throw new Error("Elevated remote session was not approved");
+		const responseOption = `Just for ${responseScopeDescription}`;
+		const choice = await ctx.ui.select("Approve elevated remote session?", [responseOption, "Persistent until revoked", "No"]);
+		if (choice === undefined || choice === "No") throw new Error("Elevated remote session was not approved");
+		const scope: ElevationScope = choice === "Persistent until revoked" ? "persistent" : "agent-response";
 
 		const sudoPrompt = randomToken("__PI_REMOTE_ADMIN_SUDO_PROMPT");
 		const readyToken = randomToken("__PI_REMOTE_ADMIN_ROOT_READY");
@@ -471,21 +437,21 @@ class ElevationManager {
 
 		await this.revoke("replaced");
 		this.transport = transport;
-		this.expiresAt = Date.now() + this.config.elevationTtlMs;
-		this.expiryTimer = setTimeout(() => {
-			void this.revoke("expired");
-		}, this.config.elevationTtlMs);
-		this.expiryTimer.unref();
-		this.log({ operation: "active", summary: `elevated transport active for ${ttl}` });
+		this.scope = scope;
+		this.responseScopeDescription = responseScopeDescription;
+		this.log({ operation: "active", summary: `elevated transport active for ${this.describe()}` });
 		return transport;
 	}
 
+	async revokeAgentResponse(): Promise<void> {
+		if (this.scope === "agent-response") await this.revoke("agent response ended");
+	}
+
 	async revoke(reason = "revoked"): Promise<void> {
-		if (this.expiryTimer) clearTimeout(this.expiryTimer);
-		this.expiryTimer = null;
-		this.expiresAt = 0;
 		const transport = this.transport;
 		this.transport = null;
+		this.scope = null;
+		this.responseScopeDescription = "this agent response";
 		if (transport) await transport.close();
 		if (reason !== "replaced") this.log({ operation: reason, summary: "elevated transport closed" });
 	}
@@ -813,8 +779,7 @@ async function createRemoteState(config: RemoteAdminConfig, localCwd: string, pi
 	let elevation: ElevationManager | undefined;
 	const logElevated = (entry: ElevatedLogEntry) => {
 		if (!config.logElevatedOps) return;
-		const ttl = elevation?.remainingMs() ?? 0;
-		const prefix = entry.operation === "expired" || entry.operation === "revoked" ? `[root ${entry.operation}]` : `[root active ${formatTtl(ttl)}]`;
+		const prefix = elevation?.isActive() ? `[root ${elevation.describe()}]` : `[root ${entry.operation}]`;
 		const suffix = entry.bytes !== undefined ? ` ${entry.bytes} bytes` : entry.exitCode !== undefined ? ` exit ${entry.exitCode}` : "";
 		pi.sendMessage({ content: `${prefix} ${entry.operation}: ${entry.summary}${suffix}`, display: true });
 	};
@@ -836,47 +801,37 @@ async function createRemoteState(config: RemoteAdminConfig, localCwd: string, pi
 	};
 }
 
+function parseSshTarget(value: string): { target: string; cwd: string } {
+	const [target, cwd = ""] = value.split(":", 2);
+	if (!target) throw new Error("--ssh must be user@host or user@host:/path");
+	return { target, cwd };
+}
+
 function buildConfig(pi: ExtensionAPI): RemoteAdminConfig | null {
-	const hostFlag = pi.getFlag("host") as string | undefined;
-	if (!hostFlag) return null;
-	const user = pi.getFlag("user") as string | undefined;
-	const port = pi.getFlag("port") as string | undefined;
-	const target = user && !hostFlag.includes("@") ? `${user}@${hostFlag}` : hostFlag;
-	const sshArgs = splitSshArgs(pi.getFlag("ssh-arg"));
-	if (port) sshArgs.push("-p", String(parsePositiveInt(port, 22)));
+	const ssh = pi.getFlag("ssh") as string | undefined;
+	if (!ssh) return null;
+	const { target, cwd } = parseSshTarget(ssh);
 	return {
 		target,
-		cwd: (pi.getFlag("cwd") as string | undefined) ?? "",
+		cwd,
 		shell: (pi.getFlag("shell") as string | undefined) || "/bin/sh",
-		sshArgs,
+		sshArgs: splitSshArgs(pi.getFlag("ssh-arg")),
 		connectTimeoutMs: DEFAULT_CONNECT_TIMEOUT_MS,
 		commandTimeoutMs: parsePositiveInt(pi.getFlag("command-timeout-ms"), DEFAULT_COMMAND_TIMEOUT_MS),
 		maxFileBytes: parsePositiveInt(pi.getFlag("max-file-bytes"), DEFAULT_MAX_FILE_BYTES),
-		elevation: parseElevation(pi.getFlag("elevation"), pi.getFlag("no-elevation")),
-		elevationTtlMs: parseDuration(pi.getFlag("elevation-ttl"), DEFAULT_ELEVATION_TTL_MS),
 		logElevatedOps: parseBool(pi.getFlag("log-elevated-ops")),
 	};
 }
 
 export default function (pi: ExtensionAPI) {
-	pi.registerFlag("host", { description: "Remote SSH host, optionally user@host", type: "string" });
-	pi.registerFlag("user", { description: "SSH user when --host does not include user@", type: "string" });
-	pi.registerFlag("port", { description: "SSH port", type: "string" });
-	pi.registerFlag("cwd", { description: "Remote working directory", type: "string" });
+	pi.registerFlag("ssh", { description: "SSH remote: user@host or user@host:/path", type: "string" });
 	pi.registerFlag("shell", { description: "Remote shell (default: /bin/sh)", type: "string" });
 	pi.registerFlag("max-file-bytes", { description: "Maximum remote file bytes for read/write (default: 25MiB)", type: "string" });
-	pi.registerFlag("elevation", { description: "Elevation mode: off|ask-session (default: ask-session)", type: "string" });
-	pi.registerFlag("elevation-ttl", { description: "Elevated session TTL, e.g. 30m or 1h (default: 30m)", type: "string" });
 	pi.registerFlag("ssh-arg", { description: "Extra SSH arg(s)", type: "string" });
 	pi.registerFlag("log-elevated-ops", { description: "Log elevated operation summaries", type: "boolean" });
-	pi.registerFlag("no-elevation", { description: "Disable elevation", type: "boolean" });
 	pi.registerFlag("command-timeout-ms", { description: "Default remote command timeout in milliseconds", type: "string" });
 
 	const localCwd = process.cwd();
-	const localReadDefinition = createReadToolDefinition(localCwd);
-	const localWriteDefinition = createWriteToolDefinition(localCwd);
-	const localEditDefinition = createEditToolDefinition(localCwd);
-	const localBashDefinition = createBashToolDefinition(localCwd);
 	const localRead = createReadTool(localCwd);
 	const localWrite = createWriteTool(localCwd);
 	const localEdit = createEditTool(localCwd);
@@ -886,7 +841,7 @@ export default function (pi: ExtensionAPI) {
 	let commandsRegistered = false;
 
 	const requireRemote = (): RemoteState => {
-		if (!remoteState) throw new Error("pi-remote-admin is not active; pass --host");
+		if (!remoteState) throw new Error("pi-remote-admin is not active; pass --ssh");
 		return remoteState;
 	};
 
@@ -894,7 +849,7 @@ export default function (pi: ExtensionAPI) {
 		if (!remoteState) return;
 		const { config, normalTransport, elevation } = remoteState;
 		const normal = normalTransport.isAlive() ? "connected" : "disconnected";
-		const elevated = elevation.isActive() ? `root active ${formatTtl(elevation.remainingMs())}` : "root inactive";
+		const elevated = elevation.isActive() ? `root ${elevation.describe()}` : "root inactive";
 		ctx.ui.setStatus("remote-admin", ctx.ui.theme.fg("accent", `Remote ${config.target}:${config.cwd} ${normal}, ${elevated}`));
 	};
 
@@ -905,8 +860,8 @@ export default function (pi: ExtensionAPI) {
 		toolsRegistered = true;
 
 		pi.registerTool({
-			...localReadDefinition,
-			renderCall: renderCallWithToolName(localReadDefinition, () => remoteToolName("read")),
+			...localRead,
+			renderCall: renderCallWithToolName(localRead, () => remoteToolName("read")),
 			async execute(id, params, signal, onUpdate, ctx) {
 				const result = await requireRemote().readTool.execute(id, params, signal, onUpdate, ctx);
 				setStatus(ctx);
@@ -915,8 +870,8 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		pi.registerTool({
-			...localWriteDefinition,
-			renderCall: renderCallWithToolName(localWriteDefinition, () => remoteToolName("write")),
+			...localWrite,
+			renderCall: renderCallWithToolName(localWrite, () => remoteToolName("write")),
 			async execute(id, params, signal, onUpdate, ctx) {
 				const result = await requireRemote().writeTool.execute(id, params, signal, onUpdate, ctx);
 				setStatus(ctx);
@@ -925,8 +880,8 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		pi.registerTool({
-			...localEditDefinition,
-			renderCall: renderCallWithToolName(localEditDefinition, () => remoteToolName("edit")),
+			...localEdit,
+			renderCall: renderCallWithToolName(localEdit, () => remoteToolName("edit")),
 			async execute(id, params, signal, onUpdate, ctx) {
 				const result = await requireRemote().editTool.execute(id, params, signal, onUpdate, ctx);
 				setStatus(ctx);
@@ -935,8 +890,8 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		pi.registerTool({
-			...localBashDefinition,
-			renderCall: renderCallWithToolName(localBashDefinition, () => remoteToolName("bash")),
+			...localBash,
+			renderCall: renderCallWithToolName(localBash, () => remoteToolName("bash")),
 			async execute(id, params, signal, onUpdate, ctx) {
 				const result = await requireRemote().bashTool.execute(id, params, signal, onUpdate, ctx);
 				setStatus(ctx);
@@ -945,40 +900,40 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		pi.registerTool({
-			...localReadDefinition,
+			...localRead,
 			name: "local_read",
 			label: "Local Read",
-			renderCall: renderCallWithToolName(localReadDefinition, "local_read"),
+			renderCall: renderCallWithToolName(localRead, "local_read"),
 			description: "Read a file from the local machine running Pi, bypassing remote-admin routing.",
 			promptSnippet: "Read a file on the local machine running Pi, not the remote host.",
 			execute: (id, params, signal, onUpdate, ctx) => localRead.execute(id, params, signal, onUpdate, ctx),
 		});
 
 		pi.registerTool({
-			...localWriteDefinition,
+			...localWrite,
 			name: "local_write",
 			label: "Local Write",
-			renderCall: renderCallWithToolName(localWriteDefinition, "local_write"),
+			renderCall: renderCallWithToolName(localWrite, "local_write"),
 			description: "Write a file on the local machine running Pi, bypassing remote-admin routing.",
 			promptSnippet: "Write a file on the local machine running Pi, not the remote host.",
 			execute: (id, params, signal, onUpdate, ctx) => localWrite.execute(id, params, signal, onUpdate, ctx),
 		});
 
 		pi.registerTool({
-			...localEditDefinition,
+			...localEdit,
 			name: "local_edit",
 			label: "Local Edit",
-			renderCall: renderCallWithToolName(localEditDefinition, "local_edit"),
+			renderCall: renderCallWithToolName(localEdit, "local_edit"),
 			description: "Edit a file on the local machine running Pi, bypassing remote-admin routing.",
 			promptSnippet: "Edit a file on the local machine running Pi, not the remote host.",
 			execute: (id, params, signal, onUpdate, ctx) => localEdit.execute(id, params, signal, onUpdate, ctx),
 		});
 
 		pi.registerTool({
-			...localBashDefinition,
+			...localBash,
 			name: "local_bash",
 			label: "Local Bash",
-			renderCall: renderCallWithToolName(localBashDefinition, "local_bash"),
+			renderCall: renderCallWithToolName(localBash, "local_bash"),
 			description: "Run a shell command on the local machine running Pi, bypassing remote-admin routing.",
 			promptSnippet: "Run a shell command on the local machine running Pi, not the remote host.",
 			execute: (id, params, signal, onUpdate, ctx) => localBash.execute(id, params, signal, onUpdate, ctx),
@@ -998,7 +953,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `Elevated remote session active for ${formatTtl(state.elevation.remainingMs())}. Default remote tools now use the root transport until expiry or revoke.`,
+							text: `Elevated remote session active for ${state.elevation.describe()}. Default remote tools now use the root transport until the approved scope ends or it is revoked.`,
 						},
 					],
 				};
@@ -1014,9 +969,9 @@ export default function (pi: ExtensionAPI) {
 			handler: async (_args, ctx) => {
 				const state = requireRemote();
 				await ctx.waitForIdle();
-				await state.elevation.approve(ctx);
+				await state.elevation.approve(ctx, "next agent response");
 				setStatus(ctx);
-				ctx.ui.notify(`Elevated remote session active for ${formatTtl(state.elevation.remainingMs())}`, "info");
+				ctx.ui.notify(`Elevated remote session active for ${state.elevation.describe()}`, "info");
 			},
 		});
 		pi.registerCommand("remote-admin-revoke", {
@@ -1050,9 +1005,13 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_switch", (_event, ctx) => setStatus(ctx));
 
+	pi.on("agent_end", async () => {
+		await remoteState?.elevation.revokeAgentResponse();
+	});
+
 	pi.on("session_shutdown", async () => {
 		if (!remoteState) return;
-		await remoteState.elevation.revoke("expired");
+		await remoteState.elevation.revoke("shutdown");
 		await remoteState.normalTransport.close();
 		remoteState = null;
 	});
@@ -1072,10 +1031,8 @@ export default function (pi: ExtensionAPI) {
 			`- Remote working directory: ${config.cwd}`,
 			"- The normal read/write/edit/bash tools operate on the remote host over persistent SSH.",
 			"- Use local_read/local_write/local_edit/local_bash for the local machine running Pi.",
-			config.elevation === "ask-session"
-				? `- Elevation: ask-session, TTL ${formatTtl(config.elevationTtlMs)}. Use remote_admin_elevate or ask the user to run /remote-admin-elevate when privileged access is required.`
-				: "- Elevation: disabled.",
-			elevation.isActive() ? `- Elevated root transport: active for ${formatTtl(elevation.remainingMs())}.` : "- Elevated root transport: inactive.",
+			"- Elevation: available on approval. Use remote_admin_elevate or ask the user to run /remote-admin-elevate when privileged access is required.",
+			elevation.isActive() ? `- Elevated root transport: active for ${elevation.describe()}.` : "- Elevated root transport: inactive.",
 		].join("\n");
 		return { systemPrompt: `${event.systemPrompt}\n${remoteContext}` };
 	});
