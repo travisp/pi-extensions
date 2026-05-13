@@ -86,9 +86,11 @@ type ElevatedLogEntry = {
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
-const DEFAULT_ELEVATION_TTL_MS = 15 * 60 * 1000;
+const DEFAULT_ELEVATION_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
+const PASSWORD_PASTE_START = "\x1b[200~";
+const PASSWORD_PASTE_END = "\x1b[201~";
 const REMOTE_ADMIN_TOOL_NAMES = ["read", "write", "edit", "bash", "local_read", "local_write", "local_edit", "local_bash", "remote_admin_elevate"];
 
 function randomToken(prefix = "__PI_REMOTE_ADMIN_END"): string {
@@ -130,7 +132,7 @@ function parseBool(value: unknown): boolean {
 
 function parseElevation(value: unknown, noElevation: unknown): ElevationMode {
 	if (parseBool(noElevation)) return "off";
-	const text = value === undefined || value === null || value === "" ? "off" : String(value);
+	const text = value === undefined || value === null || value === "" ? "ask-session" : String(value);
 	if (text === "off" || text === "ask-session") return text;
 	throw new Error(`Invalid --elevation value: ${text}`);
 }
@@ -185,6 +187,7 @@ class SshShellTransport {
 	private closed = false;
 	private stderrTail = "";
 	private sudoPromptSeen = false;
+	private sudoPromptActive = false;
 	private startupBuffer = "";
 
 	constructor(private readonly config: SshShellTransportConfig) {}
@@ -235,22 +238,25 @@ class SshShellTransport {
 
 	private async waitForStartupReady(token: string): Promise<void> {
 		await new Promise<void>((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				void this.close();
-				reject(new Error(`remote shell startup timeout${this.stderrTail ? `: ${this.stderrTail.trim()}` : ""}`));
-			}, this.config.connectTimeoutMs);
+			let deadline = Date.now() + this.config.commandTimeoutMs;
 
 			const check = () => {
 				if (this.startupBuffer.includes(`${token}\n`)) {
-					clearTimeout(timeout);
 					this.startupBuffer = "";
 					resolve();
 					return;
 				}
 
 				if (!this.isAlive()) {
-					clearTimeout(timeout);
 					reject(new Error(`remote shell exited during startup${this.stderrTail ? `: ${this.stderrTail.trim()}` : ""}`));
+					return;
+				}
+
+				// Do not count time spent in the local password popup as remote startup time.
+				if (this.sudoPromptActive) deadline = Date.now() + this.config.commandTimeoutMs;
+				if (Date.now() > deadline) {
+					void this.close();
+					reject(new Error(`remote shell startup timeout${this.stderrTail ? `: ${this.stderrTail.trim()}` : ""}`));
 					return;
 				}
 
@@ -367,12 +373,17 @@ class SshShellTransport {
 		this.sudoPromptSeen = true;
 		if (!this.config.getSudoPassword) return;
 		void (async () => {
-			const password = await this.config.getSudoPassword?.();
-			if (password === undefined) {
-				void this.close();
-				return;
+			this.sudoPromptActive = true;
+			try {
+				const password = await this.config.getSudoPassword?.();
+				if (password === undefined) {
+					void this.close();
+					return;
+				}
+				this.child?.stdin.write(`${password}\n`);
+			} finally {
+				this.sudoPromptActive = false;
 			}
-			this.child?.stdin.write(`${password}\n`);
 		})();
 	}
 
@@ -626,15 +637,35 @@ function createRemoteBashOps(context: RemoteContext): BashOperations {
 	};
 }
 
-function localToolTitle(toolName: string, localName: string, text: string): string {
-	return text === toolName ? localName : text;
+function replaceToolTitle(originalName: string, displayName: string, text: string): string {
+	return text === originalName ? displayName : text;
 }
 
-function renderCallWithLocalToolName<TDefinition extends ToolDefinition<any, any, any>>(
+function renderPasswordDialog(prompt: string, passwordLength: number, width: number): string[] {
+	const innerWidth = Math.max(20, width - 2);
+	const inputWidth = Math.max(12, Math.min(innerWidth - 4, 60));
+	const masked = "•".repeat(passwordLength).slice(-inputWidth).padEnd(inputWidth, " ");
+	const line = (text: string) => `│ ${text.slice(0, innerWidth - 2).padEnd(innerWidth - 2, " ")} │`;
+	return [
+		`╭${"─".repeat(innerWidth)}╮`,
+		line("Remote sudo password"),
+		line(prompt),
+		line(`[${masked}]`),
+		line("Enter to submit · Esc to cancel"),
+		`╰${"─".repeat(innerWidth)}╯`,
+	];
+}
+
+function stripControlChars(text: string): string {
+	return text.replace(/[\x00-\x1f\x7f]/g, "");
+}
+
+function renderCallWithToolName<TDefinition extends ToolDefinition<any, any, any>>(
 	definition: TDefinition,
-	localName: string,
+	toolName: string | (() => string),
 ): TDefinition["renderCall"] {
 	const renderCall = definition.renderCall!;
+	const name = () => (typeof toolName === "function" ? toolName() : toolName);
 	if (definition.name === "bash") {
 		return ((args, theme, context) => {
 			const component = renderCall(args, theme, context);
@@ -642,21 +673,21 @@ function renderCallWithLocalToolName<TDefinition extends ToolDefinition<any, any
 			const timeout = typeof args?.timeout === "number" ? args.timeout : undefined;
 			const commandDisplay = command || theme.fg("toolOutput", "...");
 			const timeoutSuffix = timeout ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
-			(component as { setText(text: string): void }).setText(theme.fg("toolTitle", theme.bold(`${localName} $ ${commandDisplay}`)) + timeoutSuffix);
+			(component as { setText(text: string): void }).setText(theme.fg("toolTitle", theme.bold(`${name()} $ ${commandDisplay}`)) + timeoutSuffix);
 			return component;
 		}) as TDefinition["renderCall"];
 	}
 	return ((args, theme, context) => {
-		const localTitleTheme = new Proxy(theme, {
+		const titleTheme = new Proxy(theme, {
 			get(target, prop, receiver) {
 				if (prop !== "bold") {
 					const value = Reflect.get(target, prop, receiver);
 					return typeof value === "function" ? value.bind(target) : value;
 				}
-				return (text: string) => target.bold(localToolTitle(definition.name, localName, text));
+				return (text: string) => target.bold(replaceToolTitle(definition.name, name(), text));
 			},
 		});
-		return renderCall(args, localTitleTheme as Theme, context);
+		return renderCall(args, titleTheme as Theme, context);
 	}) as TDefinition["renderCall"];
 }
 
@@ -673,30 +704,79 @@ type RemoteState = {
 
 async function promptMaskedPassword(ctx: ExtensionCommandContext | ExtensionContext, prompt: string): Promise<string | undefined> {
 	if (!ctx.hasUI) throw new Error("Sudo password prompt requires interactive mode");
-	return ctx.ui.custom<string | undefined>((tui, _theme, _kb, done) => {
-		tui.stop();
-		let password: string | undefined;
-		try {
-			const child = spawn("sh", ["-c", `printf '%s: ' "$1" >/dev/tty; stty -echo </dev/tty; IFS= read -r p </dev/tty; rc=$?; stty echo </dev/tty; printf '\\n' >/dev/tty; [ $rc -eq 0 ] && printf '%s' "$p"`, "sh", prompt], {
-				stdio: ["ignore", "pipe", "inherit"],
-			});
-			const chunks: Buffer[] = [];
-			child.stdout.on("data", (data: Buffer) => chunks.push(data));
-			child.on("close", (code) => {
-				password = code === 0 ? Buffer.concat(chunks).toString("utf8") : undefined;
-				tui.start();
-				done(password);
-			});
-			child.on("error", () => {
-				tui.start();
-				done(undefined);
-			});
-		} catch {
-			tui.start();
-			done(undefined);
-		}
-		return { render: () => [], invalidate: () => {} };
-	});
+	return ctx.ui.custom<string | undefined>(
+		(tui, _theme, keybindings, done) => {
+			let password = "";
+			let pasteBuffer = "";
+			let inPaste = false;
+			let closed = false;
+
+			const close = (value: string | undefined) => {
+				if (closed) return;
+				closed = true;
+				password = "";
+				done(value);
+			};
+
+			const appendPrintable = (text: string) => {
+				const printable = stripControlChars(text);
+				if (!printable) return;
+				password += printable;
+				tui.requestRender();
+			};
+
+			const consumePaste = (data: string): string | undefined => {
+				if (data.includes(PASSWORD_PASTE_START)) {
+					inPaste = true;
+					pasteBuffer = "";
+					data = data.slice(data.indexOf(PASSWORD_PASTE_START) + PASSWORD_PASTE_START.length);
+				}
+				if (!inPaste) return data;
+
+				pasteBuffer += data;
+				const end = pasteBuffer.indexOf(PASSWORD_PASTE_END);
+				if (end === -1) return undefined;
+
+				const pasted = pasteBuffer.slice(0, end);
+				pasteBuffer = "";
+				inPaste = false;
+				return pasted;
+			};
+
+			return {
+				render: (width: number) => renderPasswordDialog(prompt, password.length, width),
+				handleInput(data: string): void {
+					if (keybindings.matches(data, "tui.select.cancel") || data === "\x03") return close(undefined);
+					if (keybindings.matches(data, "tui.input.submit") || data === "\r" || data === "\n") return close(password);
+
+					const text = consumePaste(data);
+					if (text === undefined) return;
+
+					// Ignore terminal escape sequences such as mouse clicks, focus events,
+					// and cursor keys. Without this, SGR mouse reports like ESC [ < ... M
+					// can become literal password text.
+					if (text.includes("\x1b")) return;
+
+					if (keybindings.matches(text, "tui.editor.deleteCharBackward") || text === "\x7f" || text === "\b") {
+						password = password.slice(0, -1);
+						tui.requestRender();
+						return;
+					}
+
+					appendPrintable(text);
+				},
+				invalidate() {},
+			};
+		},
+		{
+			overlay: true,
+			overlayOptions: {
+				width: "60%",
+				minWidth: 44,
+				anchor: "center",
+			},
+		},
+	);
 }
 
 async function createRemoteState(config: RemoteAdminConfig, localCwd: string, pi: ExtensionAPI): Promise<RemoteState> {
@@ -785,8 +865,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerFlag("cwd", { description: "Remote working directory", type: "string" });
 	pi.registerFlag("shell", { description: "Remote shell (default: /bin/sh)", type: "string" });
 	pi.registerFlag("max-file-bytes", { description: "Maximum remote file bytes for read/write (default: 25MiB)", type: "string" });
-	pi.registerFlag("elevation", { description: "Elevation mode: off|ask-session", type: "string" });
-	pi.registerFlag("elevation-ttl", { description: "Elevated session TTL, e.g. 15m or 1h", type: "string" });
+	pi.registerFlag("elevation", { description: "Elevation mode: off|ask-session (default: ask-session)", type: "string" });
+	pi.registerFlag("elevation-ttl", { description: "Elevated session TTL, e.g. 30m or 1h (default: 30m)", type: "string" });
 	pi.registerFlag("ssh-arg", { description: "Extra SSH arg(s)", type: "string" });
 	pi.registerFlag("log-elevated-ops", { description: "Log elevated operation summaries", type: "boolean" });
 	pi.registerFlag("no-elevation", { description: "Disable elevation", type: "boolean" });
@@ -818,12 +898,15 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setStatus("remote-admin", ctx.ui.theme.fg("accent", `Remote ${config.target}:${config.cwd} ${normal}, ${elevated}`));
 	};
 
+	const remoteToolName = (name: string) => (remoteState?.elevation.isActive() ? `root ${name}` : name);
+
 	const registerTools = () => {
 		if (toolsRegistered) return;
 		toolsRegistered = true;
 
 		pi.registerTool({
 			...localReadDefinition,
+			renderCall: renderCallWithToolName(localReadDefinition, () => remoteToolName("read")),
 			async execute(id, params, signal, onUpdate, ctx) {
 				const result = await requireRemote().readTool.execute(id, params, signal, onUpdate, ctx);
 				setStatus(ctx);
@@ -833,6 +916,7 @@ export default function (pi: ExtensionAPI) {
 
 		pi.registerTool({
 			...localWriteDefinition,
+			renderCall: renderCallWithToolName(localWriteDefinition, () => remoteToolName("write")),
 			async execute(id, params, signal, onUpdate, ctx) {
 				const result = await requireRemote().writeTool.execute(id, params, signal, onUpdate, ctx);
 				setStatus(ctx);
@@ -842,6 +926,7 @@ export default function (pi: ExtensionAPI) {
 
 		pi.registerTool({
 			...localEditDefinition,
+			renderCall: renderCallWithToolName(localEditDefinition, () => remoteToolName("edit")),
 			async execute(id, params, signal, onUpdate, ctx) {
 				const result = await requireRemote().editTool.execute(id, params, signal, onUpdate, ctx);
 				setStatus(ctx);
@@ -851,6 +936,7 @@ export default function (pi: ExtensionAPI) {
 
 		pi.registerTool({
 			...localBashDefinition,
+			renderCall: renderCallWithToolName(localBashDefinition, () => remoteToolName("bash")),
 			async execute(id, params, signal, onUpdate, ctx) {
 				const result = await requireRemote().bashTool.execute(id, params, signal, onUpdate, ctx);
 				setStatus(ctx);
@@ -862,7 +948,7 @@ export default function (pi: ExtensionAPI) {
 			...localReadDefinition,
 			name: "local_read",
 			label: "Local Read",
-			renderCall: renderCallWithLocalToolName(localReadDefinition, "local_read"),
+			renderCall: renderCallWithToolName(localReadDefinition, "local_read"),
 			description: "Read a file from the local machine running Pi, bypassing remote-admin routing.",
 			promptSnippet: "Read a file on the local machine running Pi, not the remote host.",
 			execute: (id, params, signal, onUpdate, ctx) => localRead.execute(id, params, signal, onUpdate, ctx),
@@ -872,7 +958,7 @@ export default function (pi: ExtensionAPI) {
 			...localWriteDefinition,
 			name: "local_write",
 			label: "Local Write",
-			renderCall: renderCallWithLocalToolName(localWriteDefinition, "local_write"),
+			renderCall: renderCallWithToolName(localWriteDefinition, "local_write"),
 			description: "Write a file on the local machine running Pi, bypassing remote-admin routing.",
 			promptSnippet: "Write a file on the local machine running Pi, not the remote host.",
 			execute: (id, params, signal, onUpdate, ctx) => localWrite.execute(id, params, signal, onUpdate, ctx),
@@ -882,7 +968,7 @@ export default function (pi: ExtensionAPI) {
 			...localEditDefinition,
 			name: "local_edit",
 			label: "Local Edit",
-			renderCall: renderCallWithLocalToolName(localEditDefinition, "local_edit"),
+			renderCall: renderCallWithToolName(localEditDefinition, "local_edit"),
 			description: "Edit a file on the local machine running Pi, bypassing remote-admin routing.",
 			promptSnippet: "Edit a file on the local machine running Pi, not the remote host.",
 			execute: (id, params, signal, onUpdate, ctx) => localEdit.execute(id, params, signal, onUpdate, ctx),
@@ -892,7 +978,7 @@ export default function (pi: ExtensionAPI) {
 			...localBashDefinition,
 			name: "local_bash",
 			label: "Local Bash",
-			renderCall: renderCallWithLocalToolName(localBashDefinition, "local_bash"),
+			renderCall: renderCallWithToolName(localBashDefinition, "local_bash"),
 			description: "Run a shell command on the local machine running Pi, bypassing remote-admin routing.",
 			promptSnippet: "Run a shell command on the local machine running Pi, not the remote host.",
 			execute: (id, params, signal, onUpdate, ctx) => localBash.execute(id, params, signal, onUpdate, ctx),
@@ -979,15 +1065,18 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event) => {
 		if (!remoteState) return;
 		const { config, elevation } = remoteState;
-		const hint = [
-			"Remote admin mode is active.",
-			`Current working directory: ${config.cwd} on ${config.target}.`,
-			"The normal read/write/edit/bash tools operate on the remote host over persistent SSH. Use local_read/local_write/local_edit/local_bash only for the local machine running Pi.",
+		const remoteContext = [
+			"Remote server context:",
+			"You are connected to a remote server, while running on the user's local machine.",
+			`- Remote host: ${config.target}`,
+			`- Remote working directory: ${config.cwd}`,
+			"- The normal read/write/edit/bash tools operate on the remote host over persistent SSH.",
+			"- Use local_read/local_write/local_edit/local_bash for the local machine running Pi.",
 			config.elevation === "ask-session"
-				? `Privileged operations require an approved elevated session. Use remote_admin_elevate or ask the user to run /remote-admin-elevate. Once active, default remote tools use the root transport until TTL expiry (${formatTtl(config.elevationTtlMs)}) or /remote-admin-revoke.`
-				: "Elevation is disabled.",
-			elevation.isActive() ? `Elevated root transport is currently active for ${formatTtl(elevation.remainingMs())}.` : "Elevated root transport is inactive.",
+				? `- Elevation: ask-session, TTL ${formatTtl(config.elevationTtlMs)}. Use remote_admin_elevate or ask the user to run /remote-admin-elevate when privileged access is required.`
+				: "- Elevation: disabled.",
+			elevation.isActive() ? `- Elevated root transport: active for ${formatTtl(elevation.remainingMs())}.` : "- Elevated root transport: inactive.",
 		].join("\n");
-		return { systemPrompt: event.systemPrompt.replace(`Current working directory: ${localCwd}`, hint) };
+		return { systemPrompt: `${event.systemPrompt}\n${remoteContext}` };
 	});
 }

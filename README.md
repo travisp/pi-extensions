@@ -56,13 +56,7 @@ Use them for files and commands on the machine where Pi is running, such as `~/.
 
 ## Elevation
 
-Elevation is disabled by default. Enable approval-based elevation with:
-
-```bash
---elevation ask-session --elevation-ttl 30m
-```
-
-Then approve it with either:
+Approval-based elevation is enabled by default with a 30 minute TTL. Approve it with either:
 
 ```text
 /remote-admin-elevate
@@ -74,7 +68,7 @@ After approval, the extension starts a second persistent SSH transport running a
 
 Security properties:
 
-- the sudo password is prompted locally with echo disabled
+- the sudo password is prompted locally in a masked Pi popup
 - the password is never passed in command-line args or environment variables
 - the password is never written to disk
 - the password is never shown to the model or logged
@@ -112,10 +106,10 @@ If an operation fails with permission denied while elevation is inactive, the to
     Maximum file size for remote read/write. Default: 26214400.
 
 --elevation off|ask-session
-    Elevation mode. Default: off.
+    Elevation mode. Default: ask-session.
 
 --elevation-ttl <duration>
-    Elevated session TTL. Examples: 15m, 30m, 1h. Default: 15m.
+    Elevated session TTL. Examples: 30m, 1h. Default: 30m.
 
 --ssh-arg <arg>
     Extra SSH arg(s). Quote as needed for your shell.
