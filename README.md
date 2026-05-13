@@ -9,7 +9,6 @@ Pi config, skills, API keys, model providers, and `local_*` tools remain local. 
 ```bash
 pi -e /path/to/pi-remote-admin --ssh debian@1.2.3.4
 pi -e /path/to/pi-remote-admin --ssh debian@1.2.3.4:/srv/app
-pi -e /path/to/pi-remote-admin --ssh debian@1.2.3.4:/srv/app --log-elevated-ops
 ```
 
 The extension is inactive unless `--ssh` is passed.
@@ -17,8 +16,8 @@ The extension is inactive unless `--ssh` is passed.
 ## Remote requirements
 
 - SSH key-based auth from the local Pi machine
-- `/bin/sh` by default, or the shell specified with `--shell`
-- standard Debian-like tools: `cat`, `mv`, `mkdir`, `rm`, `mktemp`, `base64`, `chmod`, `chown`, and `stat`
+- a remote login shell that accepts standard shell commands
+- standard Debian-like tools: `mv`, `mkdir`, `rm`, `mktemp`, `base64`, `chmod`, `chown`, and `stat`
 
 No `tmux`, Python, Node, Perl, or Pi installation is required on the remote host.
 
@@ -27,12 +26,12 @@ No `tmux`, Python, Node, Perl, or Pi installation is required on the remote host
 `pi-remote-admin` starts one persistent non-PTY SSH process per remote target:
 
 ```text
-ssh -T user@host /bin/sh
+ssh -T user@host
 ```
 
 Each command is queued and wrapped with a random high-entropy sentinel line. The transport reads output until the exact sentinel line for that command appears. Timeouts kill the SSH process; the next command starts a fresh transport.
 
-File reads and writes use base64 through the shell stream, so binary files are not sent as raw terminal data. The default maximum file size is 25 MiB; configure with `--max-file-bytes`.
+File reads and writes use base64 through the shell stream, so binary files are not sent as raw terminal data. The maximum file size is 25 MiB.
 
 ## Tool mapping
 
@@ -99,32 +98,9 @@ If an operation fails with permission denied while elevation is inactive, the to
     SSH remote. Include :/path to set the remote working directory.
     Without a path, defaults to the remote shell's current directory.
 
---shell </bin/sh|/bin/bash>
-    Remote shell. Default: /bin/sh.
-
---max-file-bytes <bytes>
-    Maximum file size for remote read/write. Default: 26214400.
-
 --ssh-arg <arg>
     Extra SSH arg(s). Quote as needed for your shell.
-
---log-elevated-ops
-    Add visible summaries for elevated operations. Never logs file contents or passwords.
-
 ```
-
-## Elevated operation logging
-
-When `--log-elevated-ops` is set, visible summaries are added for root operations, for example:
-
-```text
-[root this agent response] bash: apt update && apt install -y nginx ufw fail2ban exit 0
-[root persistent] write: /etc/nginx/sites-available/app 1432 bytes
-[root persistent] bash: nginx -t exit 0
-[root revoked] revoked: elevated transport closed
-```
-
-Logs never include sudo passwords or file contents.
 
 ## Development
 

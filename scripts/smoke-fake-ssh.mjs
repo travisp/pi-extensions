@@ -27,7 +27,11 @@ while [[ $# -gt 0 ]]; do
 done
 remote="$1"; shift
 cmd="$*"
-exec bash -c "$cmd"
+if [[ -n "$cmd" ]]; then
+  exec bash -c "$cmd"
+else
+  exec bash
+fi
 `);
 chmodSync(join(tmp, 'ssh'), 0o755);
 

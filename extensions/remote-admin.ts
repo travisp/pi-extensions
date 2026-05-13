@@ -27,12 +27,7 @@ type ElevationScope = "agent-response" | "persistent";
 type RemoteAdminConfig = {
 	target: string;
 	cwd: string;
-	shell: string;
 	sshArgs: string[];
-	connectTimeoutMs: number;
-	commandTimeoutMs: number;
-	maxFileBytes: number;
-	logElevatedOps: boolean;
 };
 
 type RunResult = {
@@ -50,10 +45,7 @@ type RunOptions = {
 
 type SshShellTransportConfig = {
 	target: string;
-	shell: string;
 	sshArgs: string[];
-	connectTimeoutMs: number;
-	commandTimeoutMs: number;
 	startupCommand?: string;
 	startupReadyToken?: string;
 	sudoPrompt?: string;
@@ -71,17 +63,10 @@ type PendingRun = {
 	reject: (error: Error) => void;
 };
 
-type ElevatedLogEntry = {
-	operation: string;
-	summary: string;
-	exitCode?: number;
-	bytes?: number;
-};
-
-const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
-const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
-const DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024;
-const DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
+const CONNECT_TIMEOUT_MS = 10_000;
+const COMMAND_TIMEOUT_MS = 120_000;
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
 const PASSWORD_PASTE_START = "\x1b[200~";
 const PASSWORD_PASTE_END = "\x1b[201~";
 const REMOTE_ADMIN_TOOL_NAMES = ["read", "write", "edit", "bash", "local_read", "local_write", "local_edit", "local_bash", "remote_admin_elevate"];
@@ -92,24 +77,6 @@ function randomToken(prefix = "__PI_REMOTE_ADMIN_END"): string {
 
 function shQuote(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function oneLine(value: string, max = 240): string {
-	const line = value.replace(/\s+/g, " ").trim();
-	return line.length > max ? `${line.slice(0, max - 1)}…` : line;
-}
-
-function parsePositiveInt(value: unknown, defaultValue: number): number {
-	if (value === undefined || value === null || value === "") return defaultValue;
-	const parsed = Number(value);
-	if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`Expected positive number, got ${String(value)}`);
-	return Math.floor(parsed);
-}
-
-function parseBool(value: unknown): boolean {
-	if (value === true) return true;
-	if (value === false || value === undefined || value === null || value === "") return false;
-	return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
 }
 
 function splitSshArgs(value: unknown): string[] {
@@ -184,10 +151,10 @@ class SshShellTransport {
 			"-o",
 			"StrictHostKeyChecking=accept-new",
 			"-o",
-			`ConnectTimeout=${Math.ceil(this.config.connectTimeoutMs / 1000)}`,
+			`ConnectTimeout=${Math.ceil(CONNECT_TIMEOUT_MS / 1000)}`,
 			...this.config.sshArgs,
 			this.config.target,
-			this.config.startupCommand ?? this.config.shell,
+			...(this.config.startupCommand ? [this.config.startupCommand] : []),
 		];
 		const child = spawn("ssh", args, { stdio: "pipe" });
 		this.child = child;
@@ -206,7 +173,7 @@ class SshShellTransport {
 
 	private async waitForStartupReady(token: string): Promise<void> {
 		await new Promise<void>((resolve, reject) => {
-			let deadline = Date.now() + this.config.commandTimeoutMs;
+			let deadline = Date.now() + COMMAND_TIMEOUT_MS;
 
 			const check = () => {
 				if (this.startupBuffer.includes(`${token}\n`)) {
@@ -221,7 +188,7 @@ class SshShellTransport {
 				}
 
 				// Do not count time spent in the local password popup as remote startup time.
-				if (this.sudoPromptActive) deadline = Date.now() + this.config.commandTimeoutMs;
+				if (this.sudoPromptActive) deadline = Date.now() + COMMAND_TIMEOUT_MS;
 				if (Date.now() > deadline) {
 					void this.close();
 					reject(new Error(`remote shell startup timeout${this.stderrTail ? `: ${this.stderrTail.trim()}` : ""}`));
@@ -265,12 +232,12 @@ class SshShellTransport {
 		].join("\n");
 
 		return new Promise<RunResult>((resolve, reject) => {
-			const timeoutMs = options.timeoutMs ?? this.config.commandTimeoutMs;
+			const timeoutMs = options.timeoutMs ?? COMMAND_TIMEOUT_MS;
 			const pending: PendingRun = {
 				token,
 				buffer: "",
 				outputBytes: 0,
-				maxOutputBytes: options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+				maxOutputBytes: options.maxOutputBytes ?? MAX_OUTPUT_BYTES,
 				onData: options.onData,
 				resolve,
 				reject,
@@ -384,7 +351,6 @@ class ElevationManager {
 	constructor(
 		private readonly config: RemoteAdminConfig,
 		private readonly promptPassword: (ctx: ExtensionCommandContext | ExtensionContext, prompt: string) => Promise<string | undefined>,
-		private readonly log: (entry: ElevatedLogEntry) => void,
 	) {}
 
 	isActive(): boolean {
@@ -409,8 +375,7 @@ class ElevationManager {
 
 		const sudoPrompt = randomToken("__PI_REMOTE_ADMIN_SUDO_PROMPT");
 		const readyToken = randomToken("__PI_REMOTE_ADMIN_ROOT_READY");
-		const startupScript = `printf '%s\\n' ${shQuote(readyToken)}; exec ${shQuote(this.config.shell)}`;
-		const startupCommand = `sudo -S -p ${shQuote(sudoPrompt)} ${shQuote(this.config.shell)} -c ${shQuote(startupScript)}`;
+		const startupCommand = `sudo -S -p ${shQuote(sudoPrompt)} -v && printf '%s\\n' ${shQuote(readyToken)} && sudo -n -s`;
 		let passwordRequested = false;
 		const transport = new SshShellTransport({
 			...this.config,
@@ -425,7 +390,7 @@ class ElevationManager {
 
 		try {
 			await transport.start();
-			const result = await transport.run("id -u", { timeoutMs: this.config.commandTimeoutMs, maxOutputBytes: 4096 });
+			const result = await transport.run("id -u", { maxOutputBytes: 4096 });
 			if (result.exitCode !== 0 || result.output.trim() !== "0") {
 				throw new Error(`sudo did not start a root shell${result.output.trim() ? `: ${result.output.trim()}` : ""}`);
 			}
@@ -435,25 +400,23 @@ class ElevationManager {
 			throw new Error(passwordRequested ? `sudo authentication failed: ${reason}` : `failed to start elevated shell: ${reason}`);
 		}
 
-		await this.revoke("replaced");
+		await this.revoke();
 		this.transport = transport;
 		this.scope = scope;
 		this.responseScopeDescription = responseScopeDescription;
-		this.log({ operation: "active", summary: `elevated transport active for ${this.describe()}` });
 		return transport;
 	}
 
 	async revokeAgentResponse(): Promise<void> {
-		if (this.scope === "agent-response") await this.revoke("agent response ended");
+		if (this.scope === "agent-response") await this.revoke();
 	}
 
-	async revoke(reason = "revoked"): Promise<void> {
+	async revoke(): Promise<void> {
 		const transport = this.transport;
 		this.transport = null;
 		this.scope = null;
 		this.responseScopeDescription = "this agent response";
 		if (transport) await transport.close();
-		if (reason !== "replaced") this.log({ operation: reason, summary: "elevated transport closed" });
 	}
 }
 
@@ -476,19 +439,13 @@ function createPathMapper(localCwd: string, remoteCwd: string): (p: string) => s
 	};
 }
 
-type SelectedTransport = {
-	transport: SshShellTransport;
-	elevated: boolean;
-};
-
 type RemoteContext = {
 	config: RemoteAdminConfig;
 	toRemote: (p: string) => string;
-	selectTransport: () => SelectedTransport;
-	logElevated: (entry: ElevatedLogEntry) => void;
+	selectTransport: () => SshShellTransport;
 };
 
-function base64ReadCommand(remotePath: string, maxBytes: number): string {
+function base64ReadCommand(remotePath: string): string {
 	return [
 		`p=${shQuote(remotePath)}`,
 		`test -e "$p" || { echo "not found: $p"; exit 2; }`,
@@ -496,7 +453,7 @@ function base64ReadCommand(remotePath: string, maxBytes: number): string {
 		`test -r "$p" || { echo "permission denied: $p"; exit 13; }`,
 		`size=$(stat -c %s "$p") || exit $?`,
 		`case "$size" in *[!0-9]*|'') echo "invalid file size: $size"; exit 1;; esac`,
-		`if [ "$size" -gt ${maxBytes} ]; then echo "file too large: $size bytes (max ${maxBytes})"; exit 27; fi`,
+		`if [ "$size" -gt ${MAX_FILE_BYTES} ]; then echo "file too large: $size bytes (max ${MAX_FILE_BYTES})"; exit 27; fi`,
 		`if base64 -w 0 "$p" 2>/dev/null; then :; else base64 "$p" | tr -d '\\n'; fi`,
 	].join("\n");
 }
@@ -527,25 +484,20 @@ function createRemoteReadOps(context: RemoteContext): ReadOperations {
 	return {
 		readFile: async (p) => {
 			const remotePath = context.toRemote(p);
-			const selected = context.selectTransport();
 			const output = requireOk(
-				await selected.transport.run(base64ReadCommand(remotePath, context.config.maxFileBytes), { cwd: context.config.cwd, maxOutputBytes: context.config.maxFileBytes * 2 }),
+				await context.selectTransport().run(base64ReadCommand(remotePath), { cwd: context.config.cwd, maxOutputBytes: MAX_FILE_BYTES * 2 }),
 				`read ${remotePath}`,
 			).replace(/\s+/g, "");
-			const buffer = Buffer.from(output, "base64");
-			if (selected.elevated) context.logElevated({ operation: "read", summary: remotePath, bytes: buffer.length, exitCode: 0 });
-			return buffer;
+			return Buffer.from(output, "base64");
 		},
 		access: async (p) => {
 			const remotePath = context.toRemote(p);
-			const selected = context.selectTransport();
-			requireOk(await selected.transport.run(`p=${shQuote(remotePath)}\ntest -r "$p"`, { cwd: context.config.cwd, maxOutputBytes: 4096 }), `access ${remotePath}`);
+			requireOk(await context.selectTransport().run(`p=${shQuote(remotePath)}\ntest -r "$p"`, { cwd: context.config.cwd, maxOutputBytes: 4096 }), `access ${remotePath}`);
 		},
 		detectImageMimeType: async (p) => {
 			const remotePath = context.toRemote(p);
-			const selected = context.selectTransport();
 			const output = requireOk(
-				await selected.transport.run(base64ReadCommand(remotePath, context.config.maxFileBytes), { cwd: context.config.cwd, maxOutputBytes: context.config.maxFileBytes * 2 }),
+				await context.selectTransport().run(base64ReadCommand(remotePath), { cwd: context.config.cwd, maxOutputBytes: MAX_FILE_BYTES * 2 }),
 				`mime ${remotePath}`,
 			).replace(/\s+/g, "");
 			return detectImageMimeTypeFromBuffer(Buffer.from(output, "base64"));
@@ -558,16 +510,12 @@ function createRemoteWriteOps(context: RemoteContext): WriteOperations {
 		writeFile: async (p, content) => {
 			const remotePath = context.toRemote(p);
 			const buffer = Buffer.from(content, "utf8");
-			if (buffer.length > context.config.maxFileBytes) throw new Error(`write ${remotePath} failed: content is ${buffer.length} bytes; max is ${context.config.maxFileBytes}`);
-			const selected = context.selectTransport();
-			requireOk(await selected.transport.run(base64WriteCommand(remotePath, buffer), { cwd: context.config.cwd, maxOutputBytes: 1024 * 1024 }), `write ${remotePath}`);
-			if (selected.elevated) context.logElevated({ operation: "write", summary: remotePath, bytes: buffer.length, exitCode: 0 });
+			if (buffer.length > MAX_FILE_BYTES) throw new Error(`write ${remotePath} failed: content is ${buffer.length} bytes; max is ${MAX_FILE_BYTES}`);
+			requireOk(await context.selectTransport().run(base64WriteCommand(remotePath, buffer), { cwd: context.config.cwd, maxOutputBytes: 1024 * 1024 }), `write ${remotePath}`);
 		},
 		mkdir: async (dir) => {
 			const remoteDir = context.toRemote(dir);
-			const selected = context.selectTransport();
-			requireOk(await selected.transport.run(`mkdir -p ${shQuote(remoteDir)}`, { cwd: context.config.cwd, maxOutputBytes: 4096 }), `mkdir ${remoteDir}`);
-			if (selected.elevated) context.logElevated({ operation: "mkdir", summary: remoteDir, exitCode: 0 });
+			requireOk(await context.selectTransport().run(`mkdir -p ${shQuote(remoteDir)}`, { cwd: context.config.cwd, maxOutputBytes: 4096 }), `mkdir ${remoteDir}`);
 		},
 	};
 }
@@ -580,8 +528,7 @@ function createRemoteEditOps(context: RemoteContext): EditOperations {
 		writeFile: write.writeFile,
 		access: async (p) => {
 			const remotePath = context.toRemote(p);
-			const selected = context.selectTransport();
-			requireOk(await selected.transport.run(`p=${shQuote(remotePath)}\ntest -r "$p" && test -w "$p"`, { cwd: context.config.cwd, maxOutputBytes: 4096 }), `edit access ${remotePath}`);
+			requireOk(await context.selectTransport().run(`p=${shQuote(remotePath)}\ntest -r "$p" && test -w "$p"`, { cwd: context.config.cwd, maxOutputBytes: 4096 }), `edit access ${remotePath}`);
 		},
 	};
 }
@@ -590,14 +537,12 @@ function createRemoteBashOps(context: RemoteContext): BashOperations {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout }) => {
 			const remoteCwd = context.toRemote(cwd);
-			const selected = context.selectTransport();
-			const result = await selected.transport.run(command, {
+			const result = await context.selectTransport().run(command, {
 				cwd: remoteCwd,
-				timeoutMs: timeout ? timeout * 1000 : context.config.commandTimeoutMs,
+				timeoutMs: timeout ? timeout * 1000 : undefined,
 				onData,
 				signal,
 			});
-			if (selected.elevated) context.logElevated({ operation: "bash", summary: oneLine(command), exitCode: result.exitCode });
 			return { exitCode: result.exitCode };
 		},
 	};
@@ -745,12 +690,9 @@ async function promptMaskedPassword(ctx: ExtensionCommandContext | ExtensionCont
 	);
 }
 
-async function createRemoteState(config: RemoteAdminConfig, localCwd: string, pi: ExtensionAPI): Promise<RemoteState> {
-	const normalTransport = new SshShellTransport(config);
-	await normalTransport.start();
-	const requirements = await normalTransport.run(
+async function checkRemoteRequirements(transport: SshShellTransport): Promise<void> {
+	const result = await transport.run(
 		[
-			"command -v cat >/dev/null || exit 127",
 			"command -v mv >/dev/null || exit 127",
 			"command -v mkdir >/dev/null || exit 127",
 			"command -v rm >/dev/null || exit 127",
@@ -761,36 +703,35 @@ async function createRemoteState(config: RemoteAdminConfig, localCwd: string, pi
 			"command -v stat >/dev/null || exit 127",
 			"printf x | base64 >/dev/null || exit 127",
 		].join("\n"),
-		{ timeoutMs: config.commandTimeoutMs, maxOutputBytes: 4096 },
+		{ maxOutputBytes: 4096 },
 	);
-	if (requirements.exitCode !== 0) throw new Error(`remote requirements check failed: ${requirements.output.trim() || requirements.exitCode}`);
+	if (result.exitCode !== 0) throw new Error(`remote requirements check failed: ${result.output.trim() || result.exitCode}`);
+}
 
-	let remoteCwd = config.cwd;
-	if (!remoteCwd) {
-		const pwd = await normalTransport.run("pwd", { maxOutputBytes: 4096 });
+async function prepareRemoteCwd(transport: SshShellTransport, requestedCwd: string): Promise<string> {
+	let cwd = requestedCwd;
+	if (!cwd) {
+		const pwd = await transport.run("pwd", { maxOutputBytes: 4096 });
 		if (pwd.exitCode !== 0) throw new Error(`failed to resolve remote cwd: ${pwd.output.trim()}`);
-		remoteCwd = pwd.output.trim();
-		config.cwd = remoteCwd;
+		cwd = pwd.output.trim();
 	}
-	const mkdir = await normalTransport.run(`mkdir -p ${shQuote(remoteCwd)} && cd ${shQuote(remoteCwd)} && pwd`, { maxOutputBytes: 4096 });
-	if (mkdir.exitCode !== 0) throw new Error(`failed to prepare remote cwd: ${mkdir.output.trim()}`);
-	config.cwd = mkdir.output.trim().split("\n").pop() || remoteCwd;
 
-	let elevation: ElevationManager | undefined;
-	const logElevated = (entry: ElevatedLogEntry) => {
-		if (!config.logElevatedOps) return;
-		const prefix = elevation?.isActive() ? `[root ${elevation.describe()}]` : `[root ${entry.operation}]`;
-		const suffix = entry.bytes !== undefined ? ` ${entry.bytes} bytes` : entry.exitCode !== undefined ? ` exit ${entry.exitCode}` : "";
-		pi.sendMessage({ content: `${prefix} ${entry.operation}: ${entry.summary}${suffix}`, display: true });
-	};
-	elevation = new ElevationManager(config, promptMaskedPassword, logElevated);
-	const selectTransport = (): SelectedTransport => {
-		const elevated = elevation?.getTransport();
-		return elevated ? { transport: elevated, elevated: true } : { transport: normalTransport, elevated: false };
-	};
-	const context: RemoteContext = { config, toRemote: createPathMapper(localCwd, config.cwd), selectTransport, logElevated };
+	const result = await transport.run(`mkdir -p ${shQuote(cwd)} && cd ${shQuote(cwd)} && pwd`, { maxOutputBytes: 4096 });
+	if (result.exitCode !== 0) throw new Error(`failed to prepare remote cwd: ${result.output.trim()}`);
+	return result.output.trim().split("\n").pop() || cwd;
+}
+
+async function createRemoteState(config: RemoteAdminConfig, localCwd: string): Promise<RemoteState> {
+	const normalTransport = new SshShellTransport(config);
+	await normalTransport.start();
+	await checkRemoteRequirements(normalTransport);
+	const resolvedConfig = { ...config, cwd: await prepareRemoteCwd(normalTransport, config.cwd) };
+
+	const elevation = new ElevationManager(resolvedConfig, promptMaskedPassword);
+	const selectTransport = (): SshShellTransport => elevation.getTransport() ?? normalTransport;
+	const context: RemoteContext = { config: resolvedConfig, toRemote: createPathMapper(localCwd, resolvedConfig.cwd), selectTransport };
 	return {
-		config,
+		config: resolvedConfig,
 		normalTransport,
 		elevation,
 		context,
@@ -814,22 +755,13 @@ function buildConfig(pi: ExtensionAPI): RemoteAdminConfig | null {
 	return {
 		target,
 		cwd,
-		shell: (pi.getFlag("shell") as string | undefined) || "/bin/sh",
 		sshArgs: splitSshArgs(pi.getFlag("ssh-arg")),
-		connectTimeoutMs: DEFAULT_CONNECT_TIMEOUT_MS,
-		commandTimeoutMs: parsePositiveInt(pi.getFlag("command-timeout-ms"), DEFAULT_COMMAND_TIMEOUT_MS),
-		maxFileBytes: parsePositiveInt(pi.getFlag("max-file-bytes"), DEFAULT_MAX_FILE_BYTES),
-		logElevatedOps: parseBool(pi.getFlag("log-elevated-ops")),
 	};
 }
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("ssh", { description: "SSH remote: user@host or user@host:/path", type: "string" });
-	pi.registerFlag("shell", { description: "Remote shell (default: /bin/sh)", type: "string" });
-	pi.registerFlag("max-file-bytes", { description: "Maximum remote file bytes for read/write (default: 25MiB)", type: "string" });
 	pi.registerFlag("ssh-arg", { description: "Extra SSH arg(s)", type: "string" });
-	pi.registerFlag("log-elevated-ops", { description: "Log elevated operation summaries", type: "boolean" });
-	pi.registerFlag("command-timeout-ms", { description: "Default remote command timeout in milliseconds", type: "string" });
 
 	const localCwd = process.cwd();
 	const localRead = createReadTool(localCwd);
@@ -978,7 +910,7 @@ export default function (pi: ExtensionAPI) {
 			description: "Revoke the elevated remote-admin SSH session",
 			handler: async (_args, ctx) => {
 				const state = requireRemote();
-				await state.elevation.revoke("revoked");
+				await state.elevation.revoke();
 				setStatus(ctx);
 				ctx.ui.notify("Elevated remote session revoked", "info");
 			},
@@ -992,9 +924,9 @@ export default function (pi: ExtensionAPI) {
 		registerCommands();
 		pi.setActiveTools([...new Set([...pi.getActiveTools(), ...REMOTE_ADMIN_TOOL_NAMES])]);
 		try {
-			remoteState = await createRemoteState(config, localCwd, pi);
+			remoteState = await createRemoteState(config, localCwd);
 			setStatus(ctx);
-			ctx.ui.notify(`Remote admin connected: ${config.target}:${config.cwd}`, "info");
+			ctx.ui.notify(`Remote admin connected: ${remoteState.config.target}:${remoteState.config.cwd}`, "info");
 		} catch (error) {
 			remoteState = null;
 			const message = error instanceof Error ? error.message : String(error);
@@ -1011,7 +943,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		if (!remoteState) return;
-		await remoteState.elevation.revoke("shutdown");
+		await remoteState.elevation.revoke();
 		await remoteState.normalTransport.close();
 		remoteState = null;
 	});
