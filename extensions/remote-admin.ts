@@ -375,7 +375,8 @@ class ElevationManager {
 
 		const sudoPrompt = randomToken("__PI_REMOTE_ADMIN_SUDO_PROMPT");
 		const readyToken = randomToken("__PI_REMOTE_ADMIN_ROOT_READY");
-		const startupCommand = `sudo -S -p ${shQuote(sudoPrompt)} -v && printf '%s\\n' ${shQuote(readyToken)} && sudo -n -s`;
+		const rootShellScript = [`printf '%s\\n' ${shQuote(readyToken)}`, "shell=${SHELL:-/bin/sh}", 'exec "$shell"'].join("\n");
+		const startupCommand = `sudo -S -p ${shQuote(sudoPrompt)} /bin/sh -c ${shQuote(rootShellScript)}`;
 		let passwordRequested = false;
 		const transport = new SshShellTransport({
 			...this.config,
@@ -779,10 +780,14 @@ export default function (pi: ExtensionAPI) {
 
 	const setStatus = (ctx: ExtensionContext) => {
 		if (!remoteState) return;
-		const { config, normalTransport, elevation } = remoteState;
-		const normal = normalTransport.isAlive() ? "connected" : "disconnected";
-		const elevated = elevation.isActive() ? `root ${elevation.describe()}` : "root inactive";
-		ctx.ui.setStatus("remote-admin", ctx.ui.theme.fg("accent", `Remote ${config.target}:${config.cwd} ${normal}, ${elevated}`));
+		const { config, elevation } = remoteState;
+		const elevated = elevation.isActive() ? ` root ${elevation.describe()}` : "";
+		ctx.ui.setStatus("remote-admin", `${config.target}:${config.cwd}${elevated}`);
+	};
+
+	const warnIfRtkExtensionLoaded = (ctx: ExtensionContext) => {
+		if (!pi.getCommands().some((command) => command.name === "rtk")) return;
+		ctx.ui.notify("pi-rtk-optimizer is loaded. If command rewrite mode is enabled, rewritten bash commands may fail on the remote host unless rtk is installed there; use /rtk to switch pi-rtk-optimizer to suggest mode.", "error");
 	};
 
 	const remoteToolName = (name: string) => (remoteState?.elevation.isActive() ? `root ${name}` : name);
@@ -927,6 +932,7 @@ export default function (pi: ExtensionAPI) {
 			remoteState = await createRemoteState(config, localCwd);
 			setStatus(ctx);
 			ctx.ui.notify(`Remote admin connected: ${remoteState.config.target}:${remoteState.config.cwd}`, "info");
+			warnIfRtkExtensionLoaded(ctx);
 		} catch (error) {
 			remoteState = null;
 			const message = error instanceof Error ? error.message : String(error);

@@ -102,6 +102,40 @@ If an operation fails with permission denied while elevation is inactive, the to
     Extra SSH arg(s). Quote as needed for your shell.
 ```
 
+## Optional pi-powerline-footer setup
+
+`pi-remote-admin` publishes its connection status with Pi's normal status API under the key `remote-admin`.
+If you use `pi-powerline-footer`, you can promote that status into a dedicated Powerline item.
+
+Add this to project-local `.pi/settings.json` or global `~/.pi/agent/settings.json`:
+
+```json
+{
+  "powerline": {
+    "preset": "minimal",
+    "customItems": [
+      {
+        "id": "remote-admin",
+        "statusKey": "remote-admin",
+        "position": "left",
+        "prefix": "🌐 SSH",
+        "color": "success"
+      }
+    ]
+  }
+}
+```
+
+Then run `/reload` or restart Pi.
+
+The item shows the remote target and remote working directory, for example:
+
+```text
+🌐 SSH · host.example.com:/remote/path
+```
+
+If you already have a `powerline` object, keep your existing fields and add the `customItems` entry. Powerline currently requires this user configuration; `setStatus` can publish the status value, but it cannot set Powerline-specific layout fields such as `position`, `prefix`, or `color`.
+
 ## Development
 
 ```bash
