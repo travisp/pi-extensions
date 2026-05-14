@@ -150,6 +150,3 @@ The smoke test resolves Pi from local `node_modules` by default. In VM/container
 PI_CODING_AGENT_ROOT=/path/to/@earendil-works/pi-coding-agent npm run smoke:fake-ssh
 ```
 
-## Removed tmux behavior
-
-`tmux` is no longer used for normal `read`/`write`/`edit`/`bash` execution. The old attach/capture/send-keys transport has been removed from the core path. An optional interactive console can be added later, but it should not be used as the backend for tools.
