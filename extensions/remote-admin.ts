@@ -12,10 +12,10 @@ import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
 	type BashOperations,
-	createBashTool,
-	createEditTool,
-	createReadTool,
-	createWriteTool,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
 	type EditOperations,
 	type ReadOperations,
 	type WriteOperations,
@@ -608,10 +608,10 @@ type RemoteState = {
 	normalTransport: SshShellTransport;
 	elevation: ElevationManager;
 	context: RemoteContext;
-	readTool: ReturnType<typeof createReadTool>;
-	writeTool: ReturnType<typeof createWriteTool>;
-	editTool: ReturnType<typeof createEditTool>;
-	bashTool: ReturnType<typeof createBashTool>;
+	readTool: ReturnType<typeof createReadToolDefinition>;
+	writeTool: ReturnType<typeof createWriteToolDefinition>;
+	editTool: ReturnType<typeof createEditToolDefinition>;
+	bashTool: ReturnType<typeof createBashToolDefinition>;
 };
 
 async function promptMaskedPassword(ctx: ExtensionCommandContext | ExtensionContext, prompt: string): Promise<string | undefined> {
@@ -736,10 +736,10 @@ async function createRemoteState(config: RemoteAdminConfig, localCwd: string): P
 		normalTransport,
 		elevation,
 		context,
-		readTool: createReadTool(localCwd, { operations: createRemoteReadOps(context) }),
-		writeTool: createWriteTool(localCwd, { operations: createRemoteWriteOps(context) }),
-		editTool: createEditTool(localCwd, { operations: createRemoteEditOps(context) }),
-		bashTool: createBashTool(localCwd, { operations: createRemoteBashOps(context) }),
+		readTool: createReadToolDefinition(localCwd, { operations: createRemoteReadOps(context) }),
+		writeTool: createWriteToolDefinition(localCwd, { operations: createRemoteWriteOps(context) }),
+		editTool: createEditToolDefinition(localCwd, { operations: createRemoteEditOps(context) }),
+		bashTool: createBashToolDefinition(localCwd, { operations: createRemoteBashOps(context) }),
 	};
 }
 
@@ -765,10 +765,10 @@ export default function (pi: ExtensionAPI) {
 	pi.registerFlag("ssh-arg", { description: "Extra SSH arg(s)", type: "string" });
 
 	const localCwd = process.cwd();
-	const localRead = createReadTool(localCwd);
-	const localWrite = createWriteTool(localCwd);
-	const localEdit = createEditTool(localCwd);
-	const localBash = createBashTool(localCwd);
+	const localRead = createReadToolDefinition(localCwd);
+	const localWrite = createWriteToolDefinition(localCwd);
+	const localEdit = createEditToolDefinition(localCwd);
+	const localBash = createBashToolDefinition(localCwd);
 	let remoteState: RemoteState | null = null;
 	let toolsRegistered = false;
 	let commandsRegistered = false;

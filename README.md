@@ -144,6 +144,12 @@ npm run smoke:fake-ssh
 
 Runs a local smoke test with a fake `ssh` executable and verifies that bash/read/write/edit share one persistent transport.
 
+The smoke test resolves Pi from local `node_modules` by default. In VM/container environments such as Gondolin, install dependencies there or point the test at a mounted/built Pi package:
+
+```bash
+PI_CODING_AGENT_ROOT=/path/to/@earendil-works/pi-coding-agent npm run smoke:fake-ssh
+```
+
 ## Removed tmux behavior
 
 `tmux` is no longer used for normal `read`/`write`/`edit`/`bash` execution. The old attach/capture/send-keys transport has been removed from the core path. An optional interactive console can be added later, but it should not be used as the backend for tools.

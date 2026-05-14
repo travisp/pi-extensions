@@ -1,12 +1,23 @@
 #!/usr/bin/env node
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { discoverAndLoadExtensions } from '/Users/travis/.nodenv/versions/22.22.1/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js';
-import { ExtensionRunner } from '/Users/travis/.nodenv/versions/22.22.1/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/runner.js';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+function getPiCodingAgentRoot() {
+  const root = resolve(process.env.PI_CODING_AGENT_ROOT ?? 'node_modules/@earendil-works/pi-coding-agent');
+  if (!existsSync(join(root, 'dist/core/extensions/loader.js'))) {
+    throw new Error('Missing @earendil-works/pi-coding-agent. Run npm install --include=peer, or set PI_CODING_AGENT_ROOT.');
+  }
+  return root;
+}
+
+const piCodingAgentRoot = getPiCodingAgentRoot();
+const importPiInternal = (relativePath) => import(pathToFileURL(join(piCodingAgentRoot, relativePath)).href);
+const { discoverAndLoadExtensions } = await importPiInternal('dist/core/extensions/loader.js');
+const { ExtensionRunner } = await importPiInternal('dist/core/extensions/runner.js');
 
 const tmp = mkdtempSync(join(tmpdir(), 'pi-remote-ssh-admin-smoke-'));
-const bin = join(tmp, 'bin');
 const remoteCwd = join(tmp, 'remote');
 const countFile = join(tmp, 'ssh-count');
 
@@ -34,31 +45,6 @@ else
 fi
 `);
 chmodSync(join(tmp, 'ssh'), 0o755);
-
-writeFileSync(join(tmp, 'stat'), `#!/usr/bin/env bash
-if [[ "$1" == "-c" && "$2" == "%s" ]]; then
-  /usr/bin/stat -f %z "$3"
-else
-  /usr/bin/stat "$@"
-fi
-`);
-chmodSync(join(tmp, 'stat'), 0o755);
-
-writeFileSync(join(tmp, 'base64'), `#!/usr/bin/env bash
-if [[ "$1" == "-w" ]]; then
-  shift 2
-  /usr/bin/base64 -i "$1" | tr -d '\\n'
-elif [[ "$1" == "-d" ]]; then
-  /usr/bin/base64 -D
-elif [[ "$1" == "--decode" ]]; then
-  /usr/bin/base64 -D
-elif [[ $# -eq 1 ]]; then
-  /usr/bin/base64 -i "$1"
-else
-  /usr/bin/base64 "$@"
-fi
-`);
-chmodSync(join(tmp, 'base64'), 0o755);
 
 process.env.PATH = `${tmp}:${process.env.PATH}`;
 process.env.PI_FAKE_SSH_COUNT = countFile;
