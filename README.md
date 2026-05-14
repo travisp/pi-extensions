@@ -17,7 +17,7 @@ The extension is inactive unless `--ssh` is passed.
 
 - SSH key-based auth from the local Pi machine
 - a remote login shell that accepts standard shell commands
-- standard Debian-like tools: `mv`, `mkdir`, `rm`, `mktemp`, `base64`, `chmod`, `chown`, and `stat`
+- standard Debian-like tools: `mv`, `mkdir`, `rm`, `mktemp`, GNU `base64`, and `stat`
 
 No `tmux`, Python, Node, Perl, or Pi installation is required on the remote host.
 

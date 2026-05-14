@@ -441,7 +441,7 @@ function createPathMapper(localCwd: string, remoteCwd: string): (p: string) => s
 }
 
 type RemoteContext = {
-	config: RemoteAdminConfig;
+	cwd: string;
 	toRemote: (p: string) => string;
 	selectTransport: () => SshShellTransport;
 };
@@ -453,9 +453,8 @@ function base64ReadCommand(remotePath: string): string {
 		`test -f "$p" || { echo "not a regular file: $p"; exit 1; }`,
 		`test -r "$p" || { echo "permission denied: $p"; exit 13; }`,
 		`size=$(stat -c %s "$p") || exit $?`,
-		`case "$size" in *[!0-9]*|'') echo "invalid file size: $size"; exit 1;; esac`,
 		`if [ "$size" -gt ${MAX_FILE_BYTES} ]; then echo "file too large: $size bytes (max ${MAX_FILE_BYTES})"; exit 27; fi`,
-		`if base64 -w 0 "$p" 2>/dev/null; then :; else base64 "$p" | tr -d '\\n'; fi`,
+		`base64 -w 0 "$p"`,
 	].join("\n");
 }
 
@@ -473,9 +472,8 @@ function base64WriteCommand(remotePath: string, content: Buffer): string {
 		`cat > "$tmp.b64" <<'${tag}'`,
 		b64,
 		tag,
-		`if base64 -d < "$tmp.b64" > "$tmp" 2>/dev/null; then :; else base64 --decode < "$tmp.b64" > "$tmp" || exit $?; fi`,
+		`base64 -d < "$tmp.b64" > "$tmp" || exit $?`,
 		`rm -f "$tmp.b64"`,
-		`if [ -e "$p" ]; then chmod --reference="$p" "$tmp" 2>/dev/null || true; chown --reference="$p" "$tmp" 2>/dev/null || true; fi`,
 		`mv "$tmp" "$p" || exit $?`,
 		`trap - EXIT HUP INT TERM`,
 	].join("\n");
@@ -486,21 +484,21 @@ function createRemoteReadOps(context: RemoteContext): ReadOperations {
 		readFile: async (p) => {
 			const remotePath = context.toRemote(p);
 			const output = requireOk(
-				await context.selectTransport().run(base64ReadCommand(remotePath), { cwd: context.config.cwd, maxOutputBytes: MAX_FILE_BYTES * 2 }),
+				await context.selectTransport().run(base64ReadCommand(remotePath), { cwd: context.cwd, maxOutputBytes: MAX_FILE_BYTES * 2 }),
 				`read ${remotePath}`,
-			).replace(/\s+/g, "");
+			);
 			return Buffer.from(output, "base64");
 		},
 		access: async (p) => {
 			const remotePath = context.toRemote(p);
-			requireOk(await context.selectTransport().run(`p=${shQuote(remotePath)}\ntest -r "$p"`, { cwd: context.config.cwd, maxOutputBytes: 4096 }), `access ${remotePath}`);
+			requireOk(await context.selectTransport().run(`p=${shQuote(remotePath)}\ntest -r "$p"`, { cwd: context.cwd, maxOutputBytes: 4096 }), `access ${remotePath}`);
 		},
 		detectImageMimeType: async (p) => {
 			const remotePath = context.toRemote(p);
 			const output = requireOk(
-				await context.selectTransport().run(base64ReadCommand(remotePath), { cwd: context.config.cwd, maxOutputBytes: MAX_FILE_BYTES * 2 }),
+				await context.selectTransport().run(base64ReadCommand(remotePath), { cwd: context.cwd, maxOutputBytes: MAX_FILE_BYTES * 2 }),
 				`mime ${remotePath}`,
-			).replace(/\s+/g, "");
+			);
 			return detectImageMimeTypeFromBuffer(Buffer.from(output, "base64"));
 		},
 	};
@@ -512,11 +510,11 @@ function createRemoteWriteOps(context: RemoteContext): WriteOperations {
 			const remotePath = context.toRemote(p);
 			const buffer = Buffer.from(content, "utf8");
 			if (buffer.length > MAX_FILE_BYTES) throw new Error(`write ${remotePath} failed: content is ${buffer.length} bytes; max is ${MAX_FILE_BYTES}`);
-			requireOk(await context.selectTransport().run(base64WriteCommand(remotePath, buffer), { cwd: context.config.cwd, maxOutputBytes: 1024 * 1024 }), `write ${remotePath}`);
+			requireOk(await context.selectTransport().run(base64WriteCommand(remotePath, buffer), { cwd: context.cwd, maxOutputBytes: 1024 * 1024 }), `write ${remotePath}`);
 		},
 		mkdir: async (dir) => {
 			const remoteDir = context.toRemote(dir);
-			requireOk(await context.selectTransport().run(`mkdir -p ${shQuote(remoteDir)}`, { cwd: context.config.cwd, maxOutputBytes: 4096 }), `mkdir ${remoteDir}`);
+			requireOk(await context.selectTransport().run(`mkdir -p ${shQuote(remoteDir)}`, { cwd: context.cwd, maxOutputBytes: 4096 }), `mkdir ${remoteDir}`);
 		},
 	};
 }
@@ -529,7 +527,7 @@ function createRemoteEditOps(context: RemoteContext): EditOperations {
 		writeFile: write.writeFile,
 		access: async (p) => {
 			const remotePath = context.toRemote(p);
-			requireOk(await context.selectTransport().run(`p=${shQuote(remotePath)}\ntest -r "$p" && test -w "$p"`, { cwd: context.config.cwd, maxOutputBytes: 4096 }), `edit access ${remotePath}`);
+			requireOk(await context.selectTransport().run(`p=${shQuote(remotePath)}\ntest -r "$p" && test -w "$p"`, { cwd: context.cwd, maxOutputBytes: 4096 }), `edit access ${remotePath}`);
 		},
 	};
 }
@@ -547,10 +545,6 @@ function createRemoteBashOps(context: RemoteContext): BashOperations {
 			return { exitCode: result.exitCode };
 		},
 	};
-}
-
-function replaceToolTitle(originalName: string, displayName: string, text: string): string {
-	return text === originalName ? displayName : text;
 }
 
 function renderPasswordDialog(prompt: string, passwordLength: number, width: number): string[] {
@@ -596,7 +590,7 @@ function renderCallWithToolName<TDefinition extends ToolDefinition<any, any, any
 					const value = Reflect.get(target, prop, receiver);
 					return typeof value === "function" ? value.bind(target) : value;
 				}
-				return (text: string) => target.bold(replaceToolTitle(definition.name, name(), text));
+				return (text: string) => target.bold(text === definition.name ? name() : text);
 			},
 		});
 		return renderCall(args, titleTheme as Theme, context);
@@ -694,15 +688,9 @@ async function promptMaskedPassword(ctx: ExtensionCommandContext | ExtensionCont
 async function checkRemoteRequirements(transport: SshShellTransport): Promise<void> {
 	const result = await transport.run(
 		[
-			"command -v mv >/dev/null || exit 127",
-			"command -v mkdir >/dev/null || exit 127",
-			"command -v rm >/dev/null || exit 127",
-			"command -v mktemp >/dev/null || exit 127",
-			"command -v base64 >/dev/null || exit 127",
-			"command -v chmod >/dev/null || exit 127",
-			"command -v chown >/dev/null || exit 127",
-			"command -v stat >/dev/null || exit 127",
-			"printf x | base64 >/dev/null || exit 127",
+			"for bin in mv mkdir rm mktemp base64 stat; do command -v \"$bin\" >/dev/null || exit 127; done",
+			"printf x | base64 -w 0 >/dev/null || exit 127",
+			"printf eA== | base64 -d >/dev/null || exit 127",
 		].join("\n"),
 		{ maxOutputBytes: 4096 },
 	);
@@ -719,7 +707,7 @@ async function prepareRemoteCwd(transport: SshShellTransport, requestedCwd: stri
 
 	const result = await transport.run(`mkdir -p ${shQuote(cwd)} && cd ${shQuote(cwd)} && pwd`, { maxOutputBytes: 4096 });
 	if (result.exitCode !== 0) throw new Error(`failed to prepare remote cwd: ${result.output.trim()}`);
-	return result.output.trim().split("\n").pop() || cwd;
+	return result.output.trim();
 }
 
 async function createRemoteState(config: RemoteAdminConfig, localCwd: string): Promise<RemoteState> {
@@ -730,7 +718,7 @@ async function createRemoteState(config: RemoteAdminConfig, localCwd: string): P
 
 	const elevation = new ElevationManager(resolvedConfig, promptMaskedPassword);
 	const selectTransport = (): SshShellTransport => elevation.getTransport() ?? normalTransport;
-	const context: RemoteContext = { config: resolvedConfig, toRemote: createPathMapper(localCwd, resolvedConfig.cwd), selectTransport };
+	const context: RemoteContext = { cwd: resolvedConfig.cwd, toRemote: createPathMapper(localCwd, resolvedConfig.cwd), selectTransport };
 	return {
 		config: resolvedConfig,
 		normalTransport,
