@@ -1,4 +1,4 @@
-# pi-remote-admin
+# pi-remote-ssh-admin
 
 Pi extension for running Pi's normal `read`, `write`, `edit`, and `bash` tools on a remote host over SSH while Pi itself keeps running locally.
 
@@ -7,8 +7,8 @@ Pi config, skills, API keys, model providers, and `local_*` tools remain local. 
 ## Usage
 
 ```bash
-pi -e /path/to/pi-remote-admin --ssh debian@1.2.3.4
-pi -e /path/to/pi-remote-admin --ssh debian@1.2.3.4:/srv/app
+pi -e /path/to/pi-remote-ssh-admin --ssh debian@1.2.3.4
+pi -e /path/to/pi-remote-ssh-admin --ssh debian@1.2.3.4:/srv/app
 ```
 
 The extension is inactive unless `--ssh` is passed.
@@ -23,7 +23,7 @@ No `tmux`, Python, Node, Perl, or Pi installation is required on the remote host
 
 ## How it works
 
-`pi-remote-admin` starts one persistent non-PTY SSH process per remote target:
+`pi-remote-ssh-admin` starts one persistent non-PTY SSH process per remote target:
 
 ```text
 ssh -T user@host
@@ -104,7 +104,7 @@ If an operation fails with permission denied while elevation is inactive, the to
 
 ## Optional pi-powerline-footer setup
 
-`pi-remote-admin` publishes its connection status with Pi's normal status API under the key `remote-admin`.
+`pi-remote-ssh-admin` publishes its connection status with Pi's normal status API under the key `remote-admin`.
 If you use `pi-powerline-footer`, you can promote that status into a dedicated Powerline item.
 
 Add this to project-local `.pi/settings.json` or global `~/.pi/agent/settings.json`:

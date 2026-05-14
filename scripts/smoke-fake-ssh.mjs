@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { discoverAndLoadExtensions } from '/Users/travis/.nodenv/versions/22.22.1/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js';
 import { ExtensionRunner } from '/Users/travis/.nodenv/versions/22.22.1/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/runner.js';
 
-const tmp = mkdtempSync(join(tmpdir(), 'pi-remote-admin-smoke-'));
+const tmp = mkdtempSync(join(tmpdir(), 'pi-remote-ssh-admin-smoke-'));
 const bin = join(tmp, 'bin');
 const remoteCwd = join(tmp, 'remote');
 const countFile = join(tmp, 'ssh-count');

@@ -1,5 +1,5 @@
 /**
- * pi-remote-admin
+ * pi-remote-ssh-admin
  *
  * Routes Pi's read/write/edit/bash tools to a remote SSH host using persistent
  * non-PTY shell transports. Pi itself, local config, skills, API keys, and
@@ -774,7 +774,7 @@ export default function (pi: ExtensionAPI) {
 	let commandsRegistered = false;
 
 	const requireRemote = (): RemoteState => {
-		if (!remoteState) throw new Error("pi-remote-admin is not active; pass --ssh");
+		if (!remoteState) throw new Error("pi-remote-ssh-admin is not active; pass --ssh");
 		return remoteState;
 	};
 

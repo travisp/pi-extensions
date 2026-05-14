@@ -1,5 +1,5 @@
 {
-  "name": "pi-remote-admin",
+  "name": "pi-remote-ssh-admin",
   "version": "0.2.0",
   "private": true,
   "description": "Pi extension that routes remote tools through persistent SSH shell transports, with optional approved sudo elevation.",
