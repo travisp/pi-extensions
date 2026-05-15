@@ -114,6 +114,22 @@ function detectImageMimeTypeFromBuffer(buffer: Buffer): string | null {
 	return null;
 }
 
+function rootShellScript(readyToken: string): string {
+	return [`printf '%s\\n' ${shQuote(readyToken)}`, "shell=${SHELL:-/bin/sh}", 'exec "$shell"'].join("\n");
+}
+
+function sudoStartupCommand(args: string, readyToken: string): string {
+	return `sudo ${args} /bin/sh -c ${shQuote(rootShellScript(readyToken))}`;
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function isSudoPasswordRequired(error: unknown): boolean {
+	return /sudo:.*password.*required|password is required/i.test(errorMessage(error));
+}
+
 class SshShellTransport {
 	private child: ChildProcessWithoutNullStreams | null = null;
 	private pending: PendingRun | null = null;
@@ -122,7 +138,6 @@ class SshShellTransport {
 	private closed = false;
 	private stderrTail = "";
 	private sudoPromptSeen = false;
-	private sudoPromptActive = false;
 	private startupBuffer = "";
 
 	constructor(private readonly config: SshShellTransportConfig) {}
@@ -173,7 +188,7 @@ class SshShellTransport {
 
 	private async waitForStartupReady(token: string): Promise<void> {
 		await new Promise<void>((resolve, reject) => {
-			let deadline = Date.now() + COMMAND_TIMEOUT_MS;
+			const deadline = Date.now() + COMMAND_TIMEOUT_MS;
 
 			const check = () => {
 				if (this.startupBuffer.includes(`${token}\n`)) {
@@ -187,8 +202,6 @@ class SshShellTransport {
 					return;
 				}
 
-				// Do not count time spent in the local password popup as remote startup time.
-				if (this.sudoPromptActive) deadline = Date.now() + COMMAND_TIMEOUT_MS;
 				if (Date.now() > deadline) {
 					void this.close();
 					reject(new Error(`remote shell startup timeout${this.stderrTail ? `: ${this.stderrTail.trim()}` : ""}`));
@@ -308,17 +321,12 @@ class SshShellTransport {
 		this.sudoPromptSeen = true;
 		if (!this.config.getSudoPassword) return;
 		void (async () => {
-			this.sudoPromptActive = true;
-			try {
-				const password = await this.config.getSudoPassword?.();
-				if (password === undefined) {
-					void this.close();
-					return;
-				}
-				this.child?.stdin.write(`${password}\n`);
-			} finally {
-				this.sudoPromptActive = false;
+			const password = await this.config.getSudoPassword?.();
+			if (password === undefined) {
+				void this.close();
+				return;
 			}
+			this.child?.stdin.write(`${password}\n`);
 		})();
 	}
 
@@ -368,25 +376,47 @@ class ElevationManager {
 
 	async approve(ctx: ExtensionCommandContext | ExtensionContext, responseScopeDescription = "this agent response"): Promise<SshShellTransport> {
 		if (this.isActive() && this.transport) return this.transport;
+
 		const responseOption = `Just for ${responseScopeDescription}`;
 		const choice = await ctx.ui.select("Approve elevated remote session?", [responseOption, "Persistent until revoked", "No"]);
-		if (choice === undefined || choice === "No") throw new Error("Elevated remote session was not approved");
-		const scope: ElevationScope = choice === "Persistent until revoked" ? "persistent" : "agent-response";
+		if (!choice || choice === "No") throw new Error("Elevated remote session was not approved");
 
-		const sudoPrompt = randomToken("__PI_REMOTE_ADMIN_SUDO_PROMPT");
+		const scope: ElevationScope = choice === "Persistent until revoked" ? "persistent" : "agent-response";
+		let transport: SshShellTransport;
+
+		try {
+			transport = await this.startSudoTransport("-n");
+		} catch (error) {
+			if (!isSudoPasswordRequired(error)) throw new Error(`failed to start elevated shell: ${errorMessage(error)}`);
+
+			let password = await this.promptPassword(ctx, `Sudo password for ${this.config.target}`);
+			if (password === undefined) throw new Error("sudo authentication cancelled");
+
+			try {
+				const sudoPrompt = randomToken("__PI_REMOTE_ADMIN_SUDO_PROMPT");
+				transport = await this.startSudoTransport(`-S -p ${shQuote(sudoPrompt)}`, sudoPrompt, async () => password);
+			} catch (passwordError) {
+				throw new Error(`sudo authentication failed: ${errorMessage(passwordError)}`);
+			} finally {
+				password = "";
+			}
+		}
+
+		await this.revoke();
+		this.transport = transport;
+		this.scope = scope;
+		this.responseScopeDescription = responseScopeDescription;
+		return transport;
+	}
+
+	private async startSudoTransport(sudoArgs: string, sudoPrompt?: string, getSudoPassword?: () => Promise<string | undefined>): Promise<SshShellTransport> {
 		const readyToken = randomToken("__PI_REMOTE_ADMIN_ROOT_READY");
-		const rootShellScript = [`printf '%s\\n' ${shQuote(readyToken)}`, "shell=${SHELL:-/bin/sh}", 'exec "$shell"'].join("\n");
-		const startupCommand = `sudo -S -p ${shQuote(sudoPrompt)} /bin/sh -c ${shQuote(rootShellScript)}`;
-		let passwordRequested = false;
 		const transport = new SshShellTransport({
 			...this.config,
-			startupCommand,
+			startupCommand: sudoStartupCommand(sudoArgs, readyToken),
 			startupReadyToken: readyToken,
 			sudoPrompt,
-			getSudoPassword: async () => {
-				passwordRequested = true;
-				return this.promptPassword(ctx, `Sudo password for ${this.config.target}`);
-			},
+			getSudoPassword,
 		});
 
 		try {
@@ -395,17 +425,11 @@ class ElevationManager {
 			if (result.exitCode !== 0 || result.output.trim() !== "0") {
 				throw new Error(`sudo did not start a root shell${result.output.trim() ? `: ${result.output.trim()}` : ""}`);
 			}
+			return transport;
 		} catch (error) {
 			await transport.close();
-			const reason = error instanceof Error ? error.message : String(error);
-			throw new Error(passwordRequested ? `sudo authentication failed: ${reason}` : `failed to start elevated shell: ${reason}`);
+			throw error;
 		}
-
-		await this.revoke();
-		this.transport = transport;
-		this.scope = scope;
-		this.responseScopeDescription = responseScopeDescription;
-		return transport;
 	}
 
 	async revokeAgentResponse(): Promise<void> {
@@ -867,7 +891,7 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "remote_admin_elevate",
 			label: "Remote Admin Elevate",
-			description: "Ask the human to approve an elevated root SSH session for remote-admin. The sudo password is prompted locally and is not shown to the model.",
+			description: "Ask the human to approve an elevated root SSH session for remote-admin. If sudo requires a password, it is prompted locally and is not shown to the model.",
 			promptSnippet: "Request human approval for an elevated remote-admin root session when privileged remote operations are required.",
 			parameters: EMPTY_TOOL_PARAMETERS,
 			async execute(_id, _params, _signal, _onUpdate, ctx) {

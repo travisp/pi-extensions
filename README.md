@@ -1,21 +1,21 @@
 # pi-remote-ssh-admin
 
-Pi extension for running Pi's normal `read`, `write`, `edit`, and `bash` tools on a remote host over SSH while Pi itself keeps running locally.
+An _experimental_ Pi extension for running Pi's normal `read`, `write`, `edit`, and `bash` tools on a remote host over SSH while Pi itself keeps running locally, and also allowing Pi to continue running local tools as well.
 
 Pi config, skills, API keys, model providers, and `local_*` tools remain local. The remote server does **not** need Pi installed.
 
 ## Usage
 
 ```bash
-pi -e /path/to/pi-remote-ssh-admin --ssh debian@1.2.3.4
-pi -e /path/to/pi-remote-ssh-admin --ssh debian@1.2.3.4:/srv/app
+pi --ssh debian@1.2.3.4
+pi --ssh debian@1.2.3.4:/srv/app
 ```
 
 The extension is inactive unless `--ssh` is passed.
 
 ## Remote requirements
 
-- SSH key-based auth from the local Pi machine
+- SSH key-based auth from the local Pi machine (does not currently prompt for initial login)
 - a remote login shell that accepts standard shell commands
 - standard Debian-like tools: `mv`, `mkdir`, `rm`, `mktemp`, GNU `base64`, and `stat`
 
@@ -32,6 +32,8 @@ ssh -T user@host
 Each command is queued and wrapped with a random high-entropy sentinel line. The transport reads output until the exact sentinel line for that command appears. Timeouts kill the SSH process; the next command starts a fresh transport.
 
 File reads and writes use base64 through the shell stream, so binary files are not sent as raw terminal data. The maximum file size is 25 MiB.
+
+## Differences from the [ssh extension example in the pi respository](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/ssh.ts).
 
 ## Tool mapping
 
@@ -70,16 +72,16 @@ When approval is requested, choose one of:
 - persistent until revoked
 - no
 
-After approval, the extension starts a second SSH transport running a root shell via sudo. It does **not** turn the normal SSH transport into root.
+After approval, the extension starts a second SSH transport running a root shell via sudo. It first tries the actual root shell startup non-interactively. If sudo requires a password, Pi prompts locally in a masked popup and retries with a fresh sudo prompt. The normal SSH transport is not turned into root.
 
 Security properties:
 
-- the sudo password is prompted locally in a masked Pi popup
+- the sudo password is prompted locally only when sudo reports that one is required
+- the password is only sent after the expected random sudo prompt appears
 - the password is never passed in command-line args or environment variables
 - the password is never written to disk
 - the password is never shown to the model or logged
-- if sudo is NOPASSWD, no password line is sent to the root shell
-- the password is discarded after the elevated shell starts
+- the password is not intentionally retained after the elevated shell starts
 - response-scoped elevation is killed when the agent finishes responding to the current user request
 - persistent elevation is killed when revoked or when the session shuts down
 
