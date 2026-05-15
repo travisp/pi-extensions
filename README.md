@@ -4,7 +4,15 @@ An _experimental_ Pi extension for running Pi's normal `read`, `write`, `edit`, 
 
 Pi config, skills, API keys, model providers, and `local_*` tools remain local. The remote server does **not** need Pi installed.
 
-Note: there are inherent risks of this extension and it should never been used with anything sensitive. Use at your own risk.
+Note: there are inherent risks of this extension and it should never be used with anything sensitive. Use at your own risk.
+
+## Installation
+
+From GitHub:
+
+```bash
+pi install git:github.com/travisp/pi-remote-ssh-admin
+```
 
 ## Usage
 
