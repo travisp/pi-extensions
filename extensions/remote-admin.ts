@@ -7,7 +7,9 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
@@ -60,6 +62,11 @@ type PendingRun = {
 	onData?: (data: Buffer) => void;
 	resolve: (result: RunResult) => void;
 	reject: (error: Error) => void;
+};
+
+type MacSecureInputSession = {
+	child: ChildProcess;
+	tmpDir: string;
 };
 
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -586,6 +593,89 @@ function renderPasswordDialog(prompt: string, passwordLength: number, width: num
 	];
 }
 
+const MAC_SECURE_INPUT_SOURCE = `
+#include <Carbon/Carbon.h>
+#include <signal.h>
+#include <unistd.h>
+
+static void stop(int signal) {
+	DisableSecureEventInput();
+	_exit(signal == 0 ? 0 : 128 + signal);
+}
+
+int main(void) {
+	signal(SIGTERM, stop);
+	EnableSecureEventInput();
+	char buffer[64];
+	while (read(STDIN_FILENO, buffer, sizeof(buffer)) > 0) {}
+	stop(0);
+}
+`;
+
+async function compileMacSecureInputHelper(binaryPath: string): Promise<boolean> {
+	return new Promise((resolve) => {
+		const child = spawn("cc", ["-x", "c", "-", "-framework", "Carbon", "-o", binaryPath], { stdio: ["pipe", "ignore", "ignore"] });
+		child.stdin.on("error", () => undefined);
+		const timer = setTimeout(() => child.kill(), 10_000);
+		child.once("error", () => {
+			clearTimeout(timer);
+			resolve(false);
+		});
+		child.once("exit", (code) => {
+			clearTimeout(timer);
+			resolve(code === 0);
+		});
+		child.stdin.end(MAC_SECURE_INPUT_SOURCE);
+	});
+}
+
+async function startMacSecureInput(): Promise<MacSecureInputSession | undefined> {
+	if (process.platform !== "darwin") return undefined;
+
+	let tmpDir: string | undefined;
+	try {
+		tmpDir = await mkdtemp(path.join(os.tmpdir(), "pi-remote-admin-secure-input-"));
+		const binaryPath = path.join(tmpDir, "secure-input");
+		if (!(await compileMacSecureInputHelper(binaryPath))) throw new Error("compile failed");
+		const child = spawn(binaryPath, [], { stdio: ["pipe", "ignore", "ignore"] });
+		child.once("error", () => undefined);
+		return { child, tmpDir };
+	} catch {
+		// Secure Keyboard Entry is best-effort.
+		if (tmpDir) await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+		return undefined;
+	}
+}
+
+async function stopMacSecureInput(session: MacSecureInputSession | undefined): Promise<void> {
+	if (!session) return;
+	try {
+		session.child.stdin?.end();
+		await new Promise<void>((resolve) => {
+			const timer = setTimeout(() => {
+				session.child.kill();
+				resolve();
+			}, 1000);
+			session.child.once("exit", () => {
+				clearTimeout(timer);
+				resolve();
+			});
+		});
+	} catch {
+		// Best-effort cleanup.
+	}
+	await rm(session.tmpDir, { recursive: true, force: true }).catch(() => undefined);
+}
+
+async function withMacSecureInput<T>(fn: () => Promise<T>): Promise<T> {
+	const session = await startMacSecureInput();
+	try {
+		return await fn();
+	} finally {
+		await stopMacSecureInput(session);
+	}
+}
+
 function stripControlChars(text: string): string {
 	return text.replace(/[\x00-\x1f\x7f]/g, "");
 }
@@ -634,7 +724,8 @@ type RemoteState = {
 
 async function promptMaskedPassword(ctx: ExtensionCommandContext | ExtensionContext, prompt: string): Promise<string | undefined> {
 	if (!ctx.hasUI) throw new Error("Sudo password prompt requires interactive mode");
-	return ctx.ui.custom<string | undefined>(
+	return withMacSecureInput(() =>
+		ctx.ui.custom<string | undefined>(
 		(tui, _theme, keybindings, done) => {
 			let password = "";
 			let pasteBuffer = "";
@@ -706,7 +797,7 @@ async function promptMaskedPassword(ctx: ExtensionCommandContext | ExtensionCont
 				anchor: "center",
 			},
 		},
-	);
+	));
 }
 
 async function checkRemoteRequirements(transport: SshShellTransport): Promise<void> {

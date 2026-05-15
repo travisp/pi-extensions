@@ -82,6 +82,7 @@ After approval, the extension starts a second SSH transport running a root shell
 "Security" properties:
 
 - the sudo password is prompted locally only when sudo reports that one is required
+- on macOS, the local password prompt attempts to enable Secure Keyboard Entry while active
 - the password is only sent after the expected random sudo prompt appears
 - the password is never passed in command-line args or environment variables
 - the password is never intentionally written to disk
