@@ -20,6 +20,10 @@ Unknown slash command "/whatever".
 
 The extension does not rewrite or resubmit the user's input.
 
+## Related
+
+This pairs well with my [`pi-wtf`](https://github.com/travisp/pi-wtf). Slash Command Guard catches mistyped slash commands before they are sent; `pi-wtf` can help recover and revise prompts after they have already been submitted.
+
 ## Install
 
 Local checkout:
