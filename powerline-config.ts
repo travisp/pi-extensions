@@ -1,9 +1,20 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
-import type { ColorValue, CustomItemPosition, CustomStatusItem, PresetDef, StatusLinePreset, StatusLineSegmentId, StatusLineSegmentOptions } from "./types.ts";
+import type {
+  BuiltinStatusLineSegmentId,
+  ColorValue,
+  CustomItemPosition,
+  CustomLayout,
+  CustomStatusItem,
+  PresetDef,
+  StatusLinePreset,
+  StatusLineSegmentId,
+  StatusLineSegmentOptions,
+} from "./types.ts";
 
 export interface PowerlineConfig {
   preset: StatusLinePreset;
   customItems: CustomStatusItem[];
+  customLayout: CustomLayout | null;
   segmentOptions: StatusLineSegmentOptions;
   mouseScroll: boolean;
   fixedEditor: boolean;
@@ -25,6 +36,28 @@ function normalizeCustomItemId(value: unknown): string | null {
   if (!normalized) return null;
   return /^[a-zA-Z0-9_-]+$/.test(normalized) ? normalized : null;
 }
+
+const BUILTIN_SEGMENT_IDS = new Set<BuiltinStatusLineSegmentId>([
+  "model",
+  "shell_mode",
+  "path",
+  "git",
+  "subagents",
+  "token_in",
+  "token_out",
+  "token_total",
+  "cost",
+  "context_pct",
+  "context_total",
+  "time_spent",
+  "time",
+  "session",
+  "hostname",
+  "cache_read",
+  "cache_write",
+  "thinking",
+  "extension_statuses",
+]);
 
 function normalizeCustomItemPosition(value: unknown): CustomItemPosition {
   if (value === "left-start" || value === "left" || value === "right" || value === "secondary") return value;
@@ -59,6 +92,44 @@ function normalizeCustomStatusItem(raw: unknown, idOverride?: string): CustomSta
     hideWhenMissing: raw.hideWhenMissing !== false,
     excludeFromExtensionStatuses: raw.excludeFromExtensionStatuses !== false,
   };
+}
+
+function normalizeCustomLayoutSegmentId(value: unknown): StatusLineSegmentId | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if ((BUILTIN_SEGMENT_IDS as Set<string>).has(normalized)) return normalized as BuiltinStatusLineSegmentId;
+
+  if (!normalized.startsWith("custom:")) return null;
+  const customId = normalizeCustomItemId(normalized.slice("custom:".length));
+  return customId ? (`custom:${customId}` as const) : null;
+}
+
+function normalizeCustomLayoutSegments(raw: unknown): StatusLineSegmentId[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const segments: StatusLineSegmentId[] = [];
+  const seen = new Set<string>();
+  for (const value of raw) {
+    const segmentId = normalizeCustomLayoutSegmentId(value);
+    if (!segmentId || seen.has(segmentId)) continue;
+    seen.add(segmentId);
+    segments.push(segmentId);
+  }
+  return segments;
+}
+
+function normalizeCustomLayout(raw: unknown): CustomLayout | null {
+  if (!isRecord(raw)) return null;
+
+  const layout: CustomLayout = {};
+  const leftSegments = normalizeCustomLayoutSegments(raw.leftSegments);
+  const rightSegments = normalizeCustomLayoutSegments(raw.rightSegments);
+  const secondarySegments = normalizeCustomLayoutSegments(raw.secondarySegments);
+
+  if (leftSegments) layout.leftSegments = leftSegments;
+  if (rightSegments) layout.rightSegments = rightSegments;
+  if (secondarySegments) layout.secondarySegments = secondarySegments;
+
+  return layout.leftSegments || layout.rightSegments || layout.secondarySegments ? layout : null;
 }
 
 function normalizeCustomItems(raw: unknown): CustomStatusItem[] {
@@ -137,7 +208,14 @@ export function mergeSegmentOptions(
 }
 
 export function parsePowerlineConfig(value: unknown, presets: readonly StatusLinePreset[]): PowerlineConfig {
-  const defaultConfig: PowerlineConfig = { preset: "default", customItems: [], segmentOptions: {}, mouseScroll: true, fixedEditor: true };
+  const defaultConfig: PowerlineConfig = {
+    preset: "default",
+    customItems: [],
+    customLayout: null,
+    segmentOptions: {},
+    mouseScroll: true,
+    fixedEditor: true,
+  };
 
   const directPreset = normalizePreset(value, presets);
   if (directPreset) return { ...defaultConfig, preset: directPreset };
@@ -147,17 +225,32 @@ export function parsePowerlineConfig(value: unknown, presets: readonly StatusLin
   return {
     preset: normalizePreset(value.preset, presets) ?? defaultConfig.preset,
     customItems: normalizeCustomItems(value.customItems),
+    customLayout: normalizeCustomLayout(value.customLayout),
     segmentOptions: normalizeSegmentOptions(value),
     mouseScroll: value.mouseScroll !== false,
     fixedEditor: value.fixedEditor !== false,
   };
 }
 
-export function mergeSegmentsWithCustomItems(presetDef: PresetDef, customItems: readonly CustomStatusItem[]): {
+export function mergeSegmentsWithCustomItems(
+  presetDef: PresetDef,
+  customItems: readonly CustomStatusItem[],
+  customLayout?: CustomLayout | null,
+): {
   leftSegments: StatusLineSegmentId[];
   rightSegments: StatusLineSegmentId[];
   secondarySegments: StatusLineSegmentId[];
 } {
+  if (customLayout) {
+    return {
+      leftSegments: customLayout.leftSegments ? [...customLayout.leftSegments] : [...presetDef.leftSegments],
+      rightSegments: customLayout.rightSegments ? [...customLayout.rightSegments] : [...presetDef.rightSegments],
+      secondarySegments: customLayout.secondarySegments
+        ? [...customLayout.secondarySegments]
+        : [...(presetDef.secondarySegments ?? [])],
+    };
+  }
+
   const leftStart: StatusLineSegmentId[] = [];
   const left: StatusLineSegmentId[] = [...presetDef.leftSegments];
   const right: StatusLineSegmentId[] = [...presetDef.rightSegments];

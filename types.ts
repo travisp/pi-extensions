@@ -103,6 +103,12 @@ export interface CustomStatusItem {
   excludeFromExtensionStatuses: boolean;
 }
 
+export interface CustomLayout {
+  leftSegments?: StatusLineSegmentId[];
+  rightSegments?: StatusLineSegmentId[];
+  secondarySegments?: StatusLineSegmentId[];
+}
+
 // Preset definition
 export interface PresetDef {
   leftSegments: BuiltinStatusLineSegmentId[];
