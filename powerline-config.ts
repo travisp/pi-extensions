@@ -277,7 +277,7 @@ export function nextPowerlineSettingWithOptions(
 }
 
 export function collectHiddenExtensionStatusKeys(customItems: readonly CustomStatusItem[]): Set<string> {
-  const hidden = new Set<string>();
+  const hidden = new Set<string>(["thinking-steps"]);
   for (const item of customItems) {
     if (item.excludeFromExtensionStatuses) hidden.add(item.statusKey);
   }
