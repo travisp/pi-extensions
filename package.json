@@ -1,7 +1,7 @@
 {
-  "name": "pi-powerline-footer",
-  "version": "0.6.1",
-  "description": "Powerline-style status bar extension for pi coding agent",
+  "name": "pi-powerline-patch",
+  "version": "0.6.1-travis.1",
+  "description": "Personal fork of pi-powerline-footer with custom status-line defaults",
   "type": "module",
   "files": [
     "*.ts",
@@ -25,6 +25,7 @@
     "type": "git",
     "url": "git+https://github.com/nicobailon/pi-powerline-footer.git"
   },
+  "private": true,
   "scripts": {
     "test": "node --experimental-strip-types --test tests/**/*.test.ts"
   },
