@@ -177,6 +177,13 @@ const gitSegment: StatusLineSegment = {
   },
 };
 
+function getThinkingStepsMode(ctx: SegmentContext): string | null {
+  const rawStatus = ctx.extensionStatuses.get("thinking-steps");
+  if (!rawStatus) return null;
+
+  return normalizeExtensionStatusValue(rawStatus)?.replace(/^thinking:\s*/i, "") ?? null;
+}
+
 const thinkingSegment: StatusLineSegment = {
   id: "thinking",
   render(ctx) {
@@ -191,7 +198,7 @@ const thinkingSegment: StatusLineSegment = {
       xhigh: "xhigh",
     };
     const label = levelText[level] || level;
-    const thinkingStepsMode = ctx.extensionStatuses.get("thinking-steps")?.replace(/^thinking:\s*/i, "");
+    const thinkingStepsMode = getThinkingStepsMode(ctx);
     const content = `🧠 ${label}${thinkingStepsMode ? ` (${thinkingStepsMode})` : ""}`;
 
     if (level === "high" || level === "xhigh") {
