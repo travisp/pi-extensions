@@ -191,7 +191,7 @@ const thinkingSegment: StatusLineSegment = {
       xhigh: "xhigh",
     };
     const label = levelText[level] || level;
-    const thinkingStepsMode = ctx.extensionStatuses.get("thinking-steps");
+    const thinkingStepsMode = ctx.extensionStatuses.get("thinking-steps")?.replace(/^thinking:\s*/i, "");
     const content = `🧠 ${label}${thinkingStepsMode ? ` (${thinkingStepsMode})` : ""}`;
 
     if (level === "high" || level === "xhigh") {
