@@ -27,7 +27,7 @@ function normalizeCustomItemId(value: unknown): string | null {
 }
 
 function normalizeCustomItemPosition(value: unknown): CustomItemPosition {
-  if (value === "left" || value === "right" || value === "secondary") return value;
+  if (value === "left-start" || value === "left" || value === "right" || value === "secondary") return value;
   return "right";
 }
 
@@ -158,18 +158,20 @@ export function mergeSegmentsWithCustomItems(presetDef: PresetDef, customItems: 
   rightSegments: StatusLineSegmentId[];
   secondarySegments: StatusLineSegmentId[];
 } {
+  const leftStart: StatusLineSegmentId[] = [];
   const left: StatusLineSegmentId[] = [...presetDef.leftSegments];
   const right: StatusLineSegmentId[] = [...presetDef.rightSegments];
   const secondary: StatusLineSegmentId[] = [...(presetDef.secondarySegments ?? [])];
 
   for (const item of customItems) {
     const segmentId: StatusLineSegmentId = `custom:${item.id}`;
-    if (item.position === "left") left.push(segmentId);
+    if (item.position === "left-start") leftStart.push(segmentId);
+    else if (item.position === "left") left.push(segmentId);
     else if (item.position === "secondary") secondary.push(segmentId);
     else right.push(segmentId);
   }
 
-  return { leftSegments: left, rightSegments: right, secondarySegments: secondary };
+  return { leftSegments: [...leftStart, ...left], rightSegments: right, secondarySegments: secondary };
 }
 
 export function nextPowerlineSettingWithPreset(existingPowerlineSetting: unknown, preset: StatusLinePreset): unknown {
