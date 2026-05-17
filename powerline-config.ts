@@ -60,7 +60,7 @@ const BUILTIN_SEGMENT_IDS = new Set<BuiltinStatusLineSegmentId>([
 ]);
 
 function normalizeCustomItemPosition(value: unknown): CustomItemPosition {
-  if (value === "left-start" || value === "left" || value === "right" || value === "secondary") return value;
+  if (value === "left" || value === "right" || value === "secondary") return value;
   return "right";
 }
 
@@ -106,15 +106,10 @@ function normalizeCustomLayoutSegmentId(value: unknown): StatusLineSegmentId | n
 
 function normalizeCustomLayoutSegments(raw: unknown): StatusLineSegmentId[] | undefined {
   if (!Array.isArray(raw)) return undefined;
-  const segments: StatusLineSegmentId[] = [];
-  const seen = new Set<string>();
-  for (const value of raw) {
+  return raw.flatMap((value) => {
     const segmentId = normalizeCustomLayoutSegmentId(value);
-    if (!segmentId || seen.has(segmentId)) continue;
-    seen.add(segmentId);
-    segments.push(segmentId);
-  }
-  return segments;
+    return segmentId ? [segmentId] : [];
+  });
 }
 
 function normalizeCustomLayout(raw: unknown): CustomLayout | null {
@@ -232,7 +227,7 @@ export function parsePowerlineConfig(value: unknown, presets: readonly StatusLin
   };
 }
 
-export function mergeSegmentsWithCustomItems(
+export function resolveStatusLineSegments(
   presetDef: PresetDef,
   customItems: readonly CustomStatusItem[],
   customLayout?: CustomLayout | null,
@@ -243,28 +238,24 @@ export function mergeSegmentsWithCustomItems(
 } {
   if (customLayout) {
     return {
-      leftSegments: customLayout.leftSegments ? [...customLayout.leftSegments] : [...presetDef.leftSegments],
-      rightSegments: customLayout.rightSegments ? [...customLayout.rightSegments] : [...presetDef.rightSegments],
-      secondarySegments: customLayout.secondarySegments
-        ? [...customLayout.secondarySegments]
-        : [...(presetDef.secondarySegments ?? [])],
+      leftSegments: [...(customLayout.leftSegments ?? [])],
+      rightSegments: [...(customLayout.rightSegments ?? [])],
+      secondarySegments: [...(customLayout.secondarySegments ?? [])],
     };
   }
 
-  const leftStart: StatusLineSegmentId[] = [];
   const left: StatusLineSegmentId[] = [...presetDef.leftSegments];
   const right: StatusLineSegmentId[] = [...presetDef.rightSegments];
   const secondary: StatusLineSegmentId[] = [...(presetDef.secondarySegments ?? [])];
 
   for (const item of customItems) {
     const segmentId: StatusLineSegmentId = `custom:${item.id}`;
-    if (item.position === "left-start") leftStart.push(segmentId);
-    else if (item.position === "left") left.push(segmentId);
+    if (item.position === "left") left.push(segmentId);
     else if (item.position === "secondary") secondary.push(segmentId);
     else right.push(segmentId);
   }
 
-  return { leftSegments: [...leftStart, ...left], rightSegments: right, secondarySegments: secondary };
+  return { leftSegments: left, rightSegments: right, secondarySegments: secondary };
 }
 
 export function nextPowerlineSettingWithPreset(existingPowerlineSetting: unknown, preset: StatusLinePreset): unknown {

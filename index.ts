@@ -25,7 +25,15 @@ import { ManagedShellSession } from "./bash-mode/shell-session.ts";
 import { matchHistoryEntries, readGlobalShellHistory, readProjectHistory, appendProjectHistory } from "./bash-mode/history.ts";
 import type { BashModeSettings } from "./bash-mode/types.ts";
 import { getPreset, PRESETS } from "./presets.ts";
-import { collectHiddenExtensionStatusKeys, getNotificationExtensionStatuses, mergeSegmentOptions, mergeSegmentsWithCustomItems, nextPowerlineSettingWithOptions, nextPowerlineSettingWithPreset, parsePowerlineConfig } from "./powerline-config.ts";
+import {
+  collectHiddenExtensionStatusKeys,
+  getNotificationExtensionStatuses,
+  mergeSegmentOptions,
+  nextPowerlineSettingWithOptions,
+  nextPowerlineSettingWithPreset,
+  parsePowerlineConfig,
+  resolveStatusLineSegments,
+} from "./powerline-config.ts";
 import { getSeparator } from "./separators.ts";
 import { renderSegment } from "./segments.ts";
 import { getGitStatus, invalidateGitStatus, invalidateGitBranch } from "./git-status.ts";
@@ -891,7 +899,7 @@ function computeResponsiveLayout(
   const sepWidth = visibleWidth(separatorDef.left) + 2; // separator + spaces around it
   
   // Get all segments: primary first, then secondary
-  const mergedSegments = mergeSegmentsWithCustomItems(presetDef, config.customItems, config.customLayout);
+  const mergedSegments = resolveStatusLineSegments(presetDef, config.customItems, config.customLayout);
   const primaryIds = [...mergedSegments.leftSegments, ...mergedSegments.rightSegments];
   const secondaryIds = mergedSegments.secondarySegments;
   const allSegmentIds = [...primaryIds, ...secondaryIds];

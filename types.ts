@@ -91,7 +91,7 @@ export interface StatusLineSegmentOptions {
   time?: { format?: "12h" | "24h"; showSeconds?: boolean };
 }
 
-export type CustomItemPosition = "left-start" | "left" | "right" | "secondary";
+export type CustomItemPosition = "left" | "right" | "secondary";
 
 export interface CustomStatusItem {
   id: string;
