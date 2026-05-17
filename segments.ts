@@ -181,7 +181,12 @@ function getThinkingStepsMode(ctx: SegmentContext): string | null {
   const rawStatus = ctx.extensionStatuses.get("thinking-steps");
   if (!rawStatus) return null;
 
-  return normalizeExtensionStatusValue(rawStatus)?.replace(/^thinking:\s*/i, "") ?? null;
+  const status = normalizeExtensionStatusValue(rawStatus)
+    ?.replace(/\x1b\[[0-9;]*m/g, "")
+    .trim()
+    .replace(/^thinking:\s*/i, "");
+
+  return status && visibleWidth(status) > 0 ? status : null;
 }
 
 const thinkingSegment: StatusLineSegment = {
