@@ -131,7 +131,6 @@ Add this to project-local `.pi/settings.json` or global `~/.pi/agent/settings.js
         "id": "remote-admin",
         "statusKey": "remote-admin",
         "position": "left",
-        "prefix": "🌐 SSH",
         "color": "success"
       }
     ]
@@ -141,13 +140,13 @@ Add this to project-local `.pi/settings.json` or global `~/.pi/agent/settings.js
 
 Then run `/reload` or restart Pi.
 
-The item shows the remote target and remote working directory, for example:
+The item shows the remote hostname and remote working directory, for example:
 
 ```text
-🌐 SSH · host.example.com:/remote/path
+🌐 host.example.com:/remote/path
 ```
 
-If you already have a `powerline` object, keep your existing fields and add the `customItems` entry. Powerline currently requires this user configuration; `setStatus` can publish the status value, but it cannot set Powerline-specific layout fields such as `position`, `prefix`, or `color`.
+If you already have a `powerline` object, keep your existing fields and add the `customItems` entry. Powerline currently requires this user configuration; `setStatus` can publish the status value, but it cannot set Powerline-specific layout fields such as `position` or `color`.
 
 ## Development
 

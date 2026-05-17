@@ -713,6 +713,7 @@ function renderCallWithToolName<TDefinition extends ToolDefinition<any, any, any
 
 type RemoteState = {
 	config: RemoteAdminConfig;
+	displayHost: string;
 	normalTransport: SshShellTransport;
 	elevation: ElevationManager;
 	context: RemoteContext;
@@ -825,17 +826,28 @@ async function prepareRemoteCwd(transport: SshShellTransport, requestedCwd: stri
 	return result.output.trim();
 }
 
+async function resolveRemoteHostname(transport: SshShellTransport, fallback: string): Promise<string> {
+	const result = await transport.run("hostname -f 2>/dev/null || hostname 2>/dev/null || uname -n 2>/dev/null", { maxOutputBytes: 4096 });
+	const hostname = result.output.trim().split(/\r?\n/, 1)[0];
+	return result.exitCode === 0 && hostname ? hostname : fallback;
+}
+
 async function createRemoteState(config: RemoteAdminConfig, localCwd: string): Promise<RemoteState> {
 	const normalTransport = new SshShellTransport(config);
 	await normalTransport.start();
 	await checkRemoteRequirements(normalTransport);
-	const resolvedConfig = { ...config, cwd: await prepareRemoteCwd(normalTransport, config.cwd) };
+	const [cwd, displayHost] = await Promise.all([
+		prepareRemoteCwd(normalTransport, config.cwd),
+		resolveRemoteHostname(normalTransport, config.target),
+	]);
+	const resolvedConfig = { ...config, cwd };
 
 	const elevation = new ElevationManager(resolvedConfig, promptMaskedPassword);
 	const selectTransport = (): SshShellTransport => elevation.getTransport() ?? normalTransport;
 	const context: RemoteContext = { cwd: resolvedConfig.cwd, toRemote: createPathMapper(localCwd, resolvedConfig.cwd), selectTransport };
 	return {
 		config: resolvedConfig,
+		displayHost,
 		normalTransport,
 		elevation,
 		context,
@@ -883,9 +895,9 @@ export default function (pi: ExtensionAPI) {
 
 	const setStatus = (ctx: ExtensionContext) => {
 		if (!remoteState) return;
-		const { config, elevation } = remoteState;
+		const { config, displayHost, elevation } = remoteState;
 		const elevated = elevation.isActive() ? ` root ${elevation.describe()}` : "";
-		ctx.ui.setStatus("remote-admin", `${config.target}:${config.cwd}${elevated}`);
+		ctx.ui.setStatus("remote-admin", `🌐 ${displayHost}:${config.cwd}${elevated}`);
 	};
 
 	const warnIfRtkExtensionLoaded = (ctx: ExtensionContext) => {
