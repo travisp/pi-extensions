@@ -1,4 +1,4 @@
-import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const BUILT_IN_COMMANDS = [
   "login",
@@ -16,6 +16,7 @@ const BUILT_IN_COMMANDS = [
   "compact",
   "copy",
   "export",
+  "import",
   "share",
   "reload",
   "hotkeys",
@@ -28,39 +29,34 @@ export default function slashCommandGuard(pi: ExtensionAPI) {
     if (event.source === "extension") return { action: "continue" };
     if (!event.text.startsWith("/")) return { action: "continue" };
 
-    const parsed = parseSlashInput(event.text);
-    if (!parsed) {
+    const command = parseSlashCommand(event.text);
+    if (!command) {
       ctx.ui.notify('Unknown slash command "/".', "error");
       return { action: "handled" };
     }
 
     const commands = getKnownCommandNames(pi);
-    if (commands.has(parsed.command)) return { action: "continue" };
+    if (commands.has(command)) return { action: "continue" };
 
-    const suggestion = findClosestCommand(parsed.command, commands);
+    const suggestion = findClosestCommand(command, commands);
     const message = suggestion
-      ? `Unknown slash command "/${parsed.command}". Did you mean "/${suggestion}"?`
-      : `Unknown slash command "/${parsed.command}".`;
+      ? `Unknown slash command "/${command}". Did you mean "/${suggestion}"?`
+      : `Unknown slash command "/${command}".`;
 
     ctx.ui.notify(message, "error");
     return { action: "handled" };
   });
 }
 
-function parseSlashInput(text: string): { command: string; rest: string } | undefined {
-  const match = text.match(/^\/([^\s]*)(.*)$/s);
-  if (!match || !match[1]) return undefined;
-  return { command: match[1], rest: match[2] ?? "" };
+function parseSlashCommand(text: string): string | undefined {
+  return text.match(/^\/([^\s]+)/)?.[1];
 }
 
 function getKnownCommandNames(pi: ExtensionAPI): Set<string> {
-  const commands = new Set(BUILT_IN_COMMANDS);
-
-  for (const command of pi.getCommands() as SlashCommandInfo[]) {
-    commands.add(command.name);
-  }
-
-  return commands;
+  return new Set([
+    ...BUILT_IN_COMMANDS,
+    ...pi.getCommands().map((command) => command.name),
+  ]);
 }
 
 function findClosestCommand(input: string, commands: Set<string>): string | undefined {

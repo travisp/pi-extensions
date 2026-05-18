@@ -1,1 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build and typecheck artifacts
+dist/
+build/
+*.tsbuildinfo
+
+# Test and coverage output
+coverage/
+.nyc_output/
+
+# Package artifacts
 *.tgz
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local pi state
+.pi/
+
+# Environment and editor/OS files
+.env
+.env.*
+.DS_Store
+.vscode/
+.idea/

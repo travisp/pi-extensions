@@ -1,6 +1,6 @@
 {
   "name": "@smallbatchcode/pi-slash-command-guard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension that blocks mistyped or unknown slash commands from being sent as messages.",
   "type": "module",
   "keywords": [
@@ -25,6 +25,7 @@
     "README.md"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:builtins": "node scripts/check-built-in-commands.mjs"
   }
 }
