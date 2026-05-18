@@ -2,6 +2,8 @@
 
 Prevents mistyped or unknown slash commands from being sent as normal user messages.
 
+Does not interfere with custom slash commands registered by extensions. It also does not interfere with prompt slash commands, or skill slash commands.
+
 ## What it does
 
 When a user submits a message that starts with `/`, this extension checks whether the slash command is known to pi. If the command is unknown, the message is blocked and an error notification is shown.
@@ -19,6 +21,10 @@ Unknown slash command "/whatever".
 ```
 
 The extension does not rewrite or resubmit the user's input.
+
+## Why?
+
+If you never start a message to the agent with a slash, you've probably had the experience of attempting a slash command, hitting enter quickly, and then realizing you just sent `/treee` to the agent, furiously aborting, and then going back up the session tree so `/treee` doesn't sit in your session context (or using `pi-wtf`). This simply prevents you from sending a bad slash command to the agent, and attempts to help tell you what you meant to type.
 
 ## Related
 
@@ -43,4 +49,5 @@ pi install npm:@smallbatchcode/pi-slash-command-guard
 ```bash
 npm install
 npm run typecheck
+npm run check:builtins
 ```

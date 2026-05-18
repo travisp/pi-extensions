@@ -1,6 +1,6 @@
 {
   "name": "@smallbatchcode/pi-slash-command-guard",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pi extension that blocks mistyped or unknown slash commands from being sent as messages.",
   "type": "module",
   "keywords": [
@@ -22,7 +22,8 @@
   },
   "files": [
     "index.ts",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",

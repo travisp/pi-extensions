@@ -1,5 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+// Pi does not expose built-in interactive slash commands through pi.getCommands().
+// Keep this list in sync with Pi using `npm run check:builtins`.
 const BUILT_IN_COMMANDS = [
   "login",
   "logout",
@@ -29,13 +31,18 @@ export default function slashCommandGuard(pi: ExtensionAPI) {
     if (event.source === "extension") return { action: "continue" };
     if (!event.text.startsWith("/")) return { action: "continue" };
 
-    const command = parseSlashCommand(event.text);
-    if (!command) {
+    const commandMatch = event.text.match(/^\/(\S+)/);
+    if (!commandMatch) {
+      // The input starts with "/" but has no command name, like "/" or "/   ".
       ctx.ui.notify('Unknown slash command "/".', "error");
       return { action: "handled" };
     }
 
+    const command = commandMatch[1];
     const commands = getKnownCommandNames(pi);
+    // Registered extension commands are handled before input hooks run, but prompt
+    // templates and skills are expanded after input hooks. Let known commands continue
+    // so Pi can handle or expand them in its normal flow.
     if (commands.has(command)) return { action: "continue" };
 
     const suggestion = findClosestCommand(command, commands);
@@ -46,10 +53,6 @@ export default function slashCommandGuard(pi: ExtensionAPI) {
     ctx.ui.notify(message, "error");
     return { action: "handled" };
   });
-}
-
-function parseSlashCommand(text: string): string | undefined {
-  return text.match(/^\/([^\s]+)/)?.[1];
 }
 
 function getKnownCommandNames(pi: ExtensionAPI): Set<string> {
@@ -63,36 +66,40 @@ function findClosestCommand(input: string, commands: Set<string>): string | unde
   let best: { command: string; distance: number } | undefined;
 
   for (const command of commands) {
-    const distance = levenshtein(input, command);
-    if (!best || distance < best.distance || (distance === best.distance && command < best.command)) {
-      best = { command, distance };
-    }
+    const distance = damerauLevenshtein(input, command);
+    const isBetterMatch =
+      !best || distance < best.distance || (distance === best.distance && command < best.command);
+
+    if (isBetterMatch) best = { command, distance };
   }
 
   if (!best) return undefined;
 
-  const threshold = Math.max(2, Math.floor(Math.max(input.length, best.command.length) * 0.4));
+  const threshold = Math.max(3, Math.ceil(Math.max(input.length, best.command.length) * 0.5));
   return best.distance <= threshold ? best.command : undefined;
 }
 
-function levenshtein(a: string, b: string): number {
-  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
-  const current = new Array<number>(b.length + 1);
+function damerauLevenshtein(a: string, b: string): number {
+  const distances = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1));
+
+  for (let i = 0; i <= a.length; i++) distances[i][0] = i;
+  for (let j = 0; j <= b.length; j++) distances[0][j] = j;
 
   for (let i = 1; i <= a.length; i++) {
-    current[0] = i;
-
     for (let j = 1; j <= b.length; j++) {
       const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
-      current[j] = Math.min(
-        current[j - 1] + 1,
-        previous[j] + 1,
-        previous[j - 1] + substitutionCost,
+      distances[i][j] = Math.min(
+        distances[i - 1][j] + 1,
+        distances[i][j - 1] + 1,
+        distances[i - 1][j - 1] + substitutionCost,
       );
-    }
 
-    for (let j = 0; j <= b.length; j++) previous[j] = current[j];
+      const isAdjacentSwap = i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1];
+      if (isAdjacentSwap) {
+        distances[i][j] = Math.min(distances[i][j], distances[i - 2][j - 2] + 1);
+      }
+    }
   }
 
-  return previous[b.length];
+  return distances[a.length][b.length];
 }
