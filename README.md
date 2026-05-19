@@ -7,6 +7,7 @@ Each extension is kept in its own directory and can be installed individually.
 ## Extensions
 
 - [`slash-command-guard`](extensions/slash-command-guard/) prevents mistyped or unknown slash commands from being sent as regular user messages. If there is a close known command, it includes a “Did you mean ...?” hint; otherwise it shows an unknown-command error.
+- [`system-prompt-display`](extensions/system-prompt-display/) records the initial system prompt and later changes.
 
 ## Usage
 
@@ -20,4 +21,5 @@ Install one extension:
 
 ```bash
 pi install /path/to/pi-extensions/extensions/slash-command-guard
+pi install /path/to/pi-extensions/extensions/system-prompt-display
 ```
