@@ -45,7 +45,7 @@ File reads and writes use base64 through the shell stream, so binary files are n
 
 ## Differences from the [ssh extension example in the pi respository](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/ssh.ts).
 - Adds `local_` versions of tools so that the agent can also perform actions locally (especially local skills etc.)
-- Adds a mechanism for granted elevated access via sudo password on the remote server to the agent.
+- Adds a mechanism for granting elevated access via sudo password on the remote server to the agent.
 - Utilizes a persistent SSH connection (two if sudo is being used).
 
 ## Tool mapping
