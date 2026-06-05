@@ -1,10 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
-	DefaultResourceLoader,
 	formatSkillsForPrompt,
 	getAgentDir,
-	SettingsManager,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type Skill,
@@ -203,20 +201,15 @@ function filterSkillsInPrompt(systemPrompt: string, skills: Skill[], allowedSkil
 }
 
 async function showSettings(ctx: ExtensionCommandContext, pi: Pick<ExtensionAPI, "appendEntry">): Promise<void> {
-	const resources = await loadPromptResources(ctx.cwd);
-	latestAppendSystemPrompt = resources.appendSystemPrompt;
-	latestAppendScope = resources.appendScope;
+	const { cwd, appendSystemPrompt, skills = [] } = ctx.getSystemPromptOptions();
+	latestAppendSystemPrompt = appendSystemPrompt;
+	latestAppendScope = detectAppendScope(cwd, appendSystemPrompt);
 
-	const currentSystemPrompt = ctx.getSystemPrompt();
-	let basePrompt = latestBaseSystemPrompt;
-	if (!basePrompt) {
-		basePrompt = currentSystemPrompt;
-		latestBaseSystemPrompt = basePrompt;
-	}
+	if (!latestBaseSystemPrompt) latestBaseSystemPrompt = ctx.getSystemPrompt();
+	const basePrompt = latestBaseSystemPrompt;
 
-	const skills = resources.skills;
-	const configs = loadScopedConfigs(ctx.cwd);
-	const saveScope = (scope: SettingsScope) => saveScopedConfig(scope, ctx.cwd, configs[scope], pi);
+	const configs = loadScopedConfigs(cwd);
+	const saveScope = (scope: SettingsScope) => saveScopedConfig(scope, cwd, configs[scope], pi);
 
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
 		const matrixHeight = () => Math.max(8, Math.min(SETTINGS_MATRIX_FIXED_LINES, tui.terminal.rows - 4));
@@ -890,19 +883,6 @@ function readSessionConfig(entries: unknown[]): PromptSectionsConfig {
 
 function isSessionSettingsEntry(entry: unknown): entry is { type: "custom"; customType: string; data: PromptSectionsConfig } {
 	return isObject(entry) && entry.type === "custom" && entry.customType === SESSION_SETTINGS_ENTRY_TYPE && isObject(entry.data);
-}
-
-async function loadPromptResources(cwd: string): Promise<{ skills: Skill[]; appendSystemPrompt?: string; appendScope?: SettingsScope }> {
-	const agentDir = getAgentDir();
-	const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager: SettingsManager.create(cwd, agentDir) });
-	await resourceLoader.reload();
-	const appendPrompts = resourceLoader.getAppendSystemPrompt();
-	const appendSystemPrompt = appendPrompts.length > 0 ? appendPrompts.join("\n\n") : undefined;
-	return {
-		skills: resourceLoader.getSkills().skills,
-		appendSystemPrompt,
-		appendScope: detectAppendScope(cwd, appendSystemPrompt),
-	};
 }
 
 function detectAppendScope(cwd: string, appendSystemPrompt: string | undefined): SettingsScope | undefined {
