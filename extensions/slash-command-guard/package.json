@@ -8,6 +8,11 @@
     "pi-extension"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/travisp/pi-extensions.git"
+  },
+  "homepage": "https://github.com/travisp/pi-extensions",
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
