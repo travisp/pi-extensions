@@ -1,6 +1,6 @@
 {
   "name": "@smallbatchcode/pi-slash-command-guard",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Pi extension that blocks mistyped or unknown slash commands from being sent as messages.",
   "type": "module",
   "keywords": [
