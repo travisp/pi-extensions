@@ -28,7 +28,7 @@ Customizes the default [pi](https://github.com/badlogic/pi-mono) editor with a p
 
 **Context awareness** — Color-coded warnings at 70% (yellow) and 90% (red) context usage. During streaming, the context segment refreshes from live assistant usage instead of waiting for the next turn. Auto-compact indicator when enabled. If `pi-custom-compaction` is installed and enabled, the powerline automatically hides native context segments so the footer does not show stale post-summary usage.
 
-**Token intelligence** — Smart formatting (1.2k, 45M), subscription detection (shows "(sub)" vs dollar cost).
+**Token intelligence** — Smart formatting (1.2k, 45M), cumulative cache read/write counts, latest prompt cache hit rate (`CH`), and subscription detection (shows "(sub)" vs dollar cost).
 
 **Sticky bash mode** — Toggle bash mode with `ctrl+shift+b` or `/bash-mode`. It keeps a managed shell session alive for the current pi session, shows a dedicated `shell_mode` segment, streams command output into an embedded transcript below the editor, and lets `cd` or exported state persist across commands.
 
@@ -334,7 +334,7 @@ Use `"off"` to disable extension-owned git polling entirely and only show the br
 
 ## Segments
 
-`model` · `thinking` · `shell_mode` · `path` · `git` · `subagents` · `token_in` · `token_out` · `token_total` · `cost` · `context_pct` · `context_total` · `time_spent` · `time` · `session` · `hostname` · `cache_read` · `cache_write`
+`model` · `thinking` · `shell_mode` · `path` · `git` · `subagents` · `token_in` · `token_out` · `token_total` · `cost` · `context_pct` · `context_total` · `time_spent` · `time` · `session` · `hostname` · `cache_read` · `cache_write` · `cache_hit`
 
 ## Separators
 

@@ -55,6 +55,7 @@ const BUILTIN_SEGMENT_IDS = new Set<BuiltinStatusLineSegmentId>([
   "hostname",
   "cache_read",
   "cache_write",
+  "cache_hit",
   "thinking",
   "extension_statuses",
 ]);

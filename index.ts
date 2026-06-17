@@ -240,6 +240,11 @@ function getUsageTokenTotal(usage: SessionAssistantUsage): number {
   return totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 }
 
+function getPromptCacheHitRate(usage: SessionAssistantUsage): number | undefined {
+  const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+  return promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
+}
+
 function hasSessionAssistantUsage(value: unknown): value is SessionAssistantUsage {
   if (!isRecord(value)) {
     return false;
@@ -2106,6 +2111,11 @@ export default function powerlineFooter(pi: ExtensionAPI) {
 
     // Calculate context percentage.
     const latestUsage = isStreaming ? liveAssistantUsage ?? lastAssistant?.usage : lastAssistant?.usage;
+    const latestUsageHasPromptCacheActivity = latestUsage
+      ? latestUsage.cacheRead > 0 || latestUsage.cacheWrite > 0
+      : false;
+    const hasPromptCacheActivity = cacheRead > 0 || cacheWrite > 0 || latestUsageHasPromptCacheActivity;
+    const latestPromptCacheHitRate = latestUsage && hasPromptCacheActivity ? getPromptCacheHitRate(latestUsage) : undefined;
     const coreContextUsage = isStreaming && liveAssistantUsage ? null : readCoreContextUsage(ctx);
     const contextTokens = coreContextUsage?.contextTokens ?? (latestUsage ? getUsageTokenTotal(latestUsage) : 0);
     const contextWindow = coreContextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
@@ -2132,7 +2142,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       thinkingLevel,
       sessionId: ctx.sessionManager?.getSessionId?.(),
       cwd: ctx.cwd,
-      usageStats: { input, output, cacheRead, cacheWrite, cost },
+      usageStats: { input, output, cacheRead, cacheWrite, latestPromptCacheHitRate, cost },
       contextPercent,
       contextWindow,
       autoCompactEnabled: ctx.settingsManager?.getCompactionSettings?.()?.enabled ?? true,

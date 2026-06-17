@@ -410,6 +410,18 @@ const cacheWriteSegment: StatusLineSegment = {
   },
 };
 
+const cacheHitSegment: StatusLineSegment = {
+  id: "cache_hit",
+  render(ctx) {
+    const { latestPromptCacheHitRate } = ctx.usageStats;
+    if (latestPromptCacheHitRate === undefined) {
+      return { content: "", visible: false };
+    }
+
+    return { content: color(ctx, "tokens", `CH${latestPromptCacheHitRate.toFixed(1)}%`), visible: true };
+  },
+};
+
 const extensionStatusesSegment: StatusLineSegment = {
   id: "extension_statuses",
   render(ctx) {
@@ -460,6 +472,7 @@ export const SEGMENTS: Record<BuiltinStatusLineSegmentId, StatusLineSegment> = {
   hostname: hostnameSegment,
   cache_read: cacheReadSegment,
   cache_write: cacheWriteSegment,
+  cache_hit: cacheHitSegment,
   extension_statuses: extensionStatusesSegment,
 };
 

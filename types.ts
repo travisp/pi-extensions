@@ -45,6 +45,7 @@ export type BuiltinStatusLineSegmentId =
   | "hostname"
   | "cache_read"
   | "cache_write"
+  | "cache_hit"
   | "thinking"
   | "extension_statuses";
 
@@ -146,6 +147,7 @@ export interface UsageStats {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  latestPromptCacheHitRate?: number;
   cost: number;
 }
 
