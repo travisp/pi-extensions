@@ -258,6 +258,8 @@ export function resolveStatusLineSegments(
   return { leftSegments: left, rightSegments: right, secondarySegments: secondary };
 }
 
+export const mergeSegmentsWithCustomItems = resolveStatusLineSegments;
+
 export function nextPowerlineSettingWithPreset(existingPowerlineSetting: unknown, preset: StatusLinePreset): unknown {
   if (!isRecord(existingPowerlineSetting)) {
     return preset;
