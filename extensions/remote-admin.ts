@@ -629,9 +629,9 @@ function base64ReadCommand(remotePath: string): string {
 		`test -e "$p" || { echo "not found: $p"; exit 2; }`,
 		`test -f "$p" || { echo "not a regular file: $p"; exit 1; }`,
 		`test -r "$p" || { echo "permission denied: $p"; exit 13; }`,
-		`size=$(stat -c %s "$p") || exit $?`,
+		`size=$(wc -c < "$p" | tr -d '[:space:]') || exit $?`,
 		`if [ "$size" -gt ${MAX_FILE_BYTES} ]; then echo "file too large: $size bytes (max ${MAX_FILE_BYTES})"; exit 27; fi`,
-		`base64 -w 0 "$p"`,
+		`base64 < "$p" | tr -d '\\n'`,
 	].join("\n");
 }
 
@@ -951,8 +951,7 @@ async function promptMaskedPassword(ctx: ExtensionCommandContext | ExtensionCont
 async function checkRemoteRequirements(transport: SshShellTransport): Promise<void> {
 	const result = await transport.run(
 		[
-			"for bin in mv mkdir rm mktemp base64 stat; do command -v \"$bin\" >/dev/null || exit 127; done",
-			"printf x | base64 -w 0 >/dev/null || exit 127",
+			"for bin in mv mkdir rm mktemp base64 wc tr; do command -v \"$bin\" >/dev/null || exit 127; done",
 			"printf eA== | base64 -d >/dev/null || exit 127",
 		].join("\n"),
 		{ maxOutputBytes: 4096 },

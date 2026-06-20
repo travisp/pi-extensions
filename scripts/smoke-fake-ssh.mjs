@@ -68,35 +68,17 @@ fi
 chmodSync(join(tmp, 'ssh'), 0o755);
 
 writeFileSync(join(tmp, 'stat'), `#!/usr/bin/env bash
-if [[ "$1" == "-c" && "$2" == "%s" ]]; then
-  shift 2
-  for file in "$@"; do
-    wc -c < "$file" | tr -d ' '
-  done
-else
-  exec /usr/bin/stat "$@"
-fi
+echo "fake stat should not be required by remote-admin file operations" >&2
+exit 64
 `);
 chmodSync(join(tmp, 'stat'), 0o755);
 
 writeFileSync(join(tmp, 'base64'), `#!/usr/bin/env bash
-if [[ "$1" == "-w" && "$2" == "0" ]]; then
-  shift 2
-  if [[ $# -gt 0 ]]; then
-    /usr/bin/base64 -i "$1" | tr -d '\\n'
-  else
-    /usr/bin/base64 | tr -d '\\n'
-  fi
-elif [[ "$1" == "-d" ]]; then
-  shift
-  if [[ $# -gt 0 ]]; then
-    /usr/bin/base64 -D -i "$1"
-  else
-    /usr/bin/base64 -D
-  fi
-else
-  exec /usr/bin/base64 "$@"
+if [[ "$1" == "-w" ]]; then
+  echo "fake BSD base64: unsupported option -w" >&2
+  exit 64
 fi
+exec /usr/bin/base64 "$@"
 `);
 chmodSync(join(tmp, 'base64'), 0o755);
 

@@ -28,7 +28,7 @@ The extension is inactive unless `--ssh` is passed.
 
 - SSH key-based auth from the local Pi machine, or `--use-password` in interactive TUI mode (masked local popup)
 - a remote login shell that accepts standard shell commands
-- standard Debian-like tools: `mv`, `mkdir`, `rm`, `mktemp`, GNU `base64`, and `stat`
+- standard shell tools: `mv`, `mkdir`, `rm`, `mktemp`, `base64`, `wc`, and `tr` (GNU/Linux and macOS/BSD variants are supported)
 
 No `tmux`, Python, Node, Perl, or Pi installation is required on the remote host.
 
