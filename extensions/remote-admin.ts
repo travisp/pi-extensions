@@ -8,7 +8,8 @@
 
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer, type Server, type Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -29,6 +30,7 @@ type RemoteAdminConfig = {
 	target: string;
 	cwd: string;
 	sshArgs: string[];
+	usePassword: boolean;
 };
 
 type RunResult = {
@@ -51,6 +53,7 @@ type SshShellTransportConfig = {
 	startupReadyToken?: string;
 	sudoPrompt?: string;
 	getSudoPassword?: () => Promise<string | undefined>;
+	promptSshPassword?: (prompt: string) => Promise<string | undefined>;
 };
 
 type PendingRun = {
@@ -67,6 +70,11 @@ type PendingRun = {
 type MacSecureInputSession = {
 	child: ChildProcess;
 	tmpDir: string;
+};
+
+type SshAskPassSession = {
+	env: Record<string, string>;
+	close: () => Promise<void>;
 };
 
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -137,6 +145,113 @@ function isSudoPasswordRequired(error: unknown): boolean {
 	return /sudo:.*password.*required|password is required/i.test(errorMessage(error));
 }
 
+const SSH_ASKPASS_HELPER_SOURCE = `
+const net = require("node:net");
+
+const socketPath = process.env.PI_REMOTE_ADMIN_ASKPASS_SOCKET;
+if (!socketPath) process.exit(1);
+
+let response = "";
+const client = net.createConnection(socketPath);
+client.setEncoding("utf8");
+client.on("connect", () => {
+	client.write(JSON.stringify({ prompt: process.argv.slice(2).join(" ") }) + "\\n");
+});
+client.on("data", (chunk) => {
+	response += chunk;
+});
+client.on("end", () => {
+	try {
+		const parsed = JSON.parse(response);
+		if (typeof parsed.password !== "string") return process.exit(1);
+		process.stdout.write(parsed.password);
+	} catch {
+		process.exit(1);
+	}
+});
+client.on("error", () => process.exit(1));
+`;
+
+function formatSshPasswordPrompt(target: string, prompt: string): string {
+	const trimmed = prompt.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").trim();
+	return trimmed ? `${trimmed}\nTarget: ${target}` : `SSH password for ${target}`;
+}
+
+async function startSshAskPassSession(target: string, promptPassword: (prompt: string) => Promise<string | undefined>): Promise<SshAskPassSession> {
+	const tmpDir = await mkdtemp(path.join(os.tmpdir(), "pra-ap-"));
+	let server: Server | undefined;
+	try {
+		const socketPath = path.join(tmpDir, "a.sock");
+		const helperJsPath = path.join(tmpDir, "askpass.cjs");
+		const helperPath = path.join(tmpDir, "askpass.sh");
+		await writeFile(helperJsPath, SSH_ASKPASS_HELPER_SOURCE);
+		await writeFile(helperPath, `#!/bin/sh\nexec ${shQuote(process.execPath)} ${shQuote(helperJsPath)} "$@"\n`);
+		await Promise.all([chmod(helperJsPath, 0o700), chmod(helperPath, 0o700)]);
+
+		let cancelled = false;
+		const sockets = new Set<Socket>();
+		const answer = (socket: Socket, password?: string) => socket.end(`${JSON.stringify(password === undefined ? {} : { password })}\n`);
+		server = createServer((socket) => {
+			sockets.add(socket);
+			socket.setEncoding("utf8");
+			socket.once("close", () => sockets.delete(socket));
+
+			let request = "";
+			socket.on("data", (chunk) => {
+				request += chunk;
+				const newline = request.indexOf("\n");
+				if (newline < 0) return;
+				socket.removeAllListeners("data");
+
+				void (async () => {
+					try {
+						const parsed = JSON.parse(request.slice(0, newline)) as { prompt?: unknown };
+						if (cancelled) return answer(socket);
+
+						let password = await promptPassword(formatSshPasswordPrompt(target, typeof parsed.prompt === "string" ? parsed.prompt : ""));
+						if (password === undefined) {
+							cancelled = true;
+							return answer(socket);
+						}
+
+						answer(socket, password);
+						password = "";
+					} catch {
+						answer(socket);
+					}
+				})();
+			});
+		});
+
+		await new Promise<void>((resolve, reject) => {
+			const onError = (error: Error) => reject(error);
+			server!.once("error", onError);
+			server!.listen(socketPath, () => {
+				server!.off("error", onError);
+				resolve();
+			});
+		});
+
+		return {
+			env: {
+				SSH_ASKPASS: helperPath,
+				SSH_ASKPASS_REQUIRE: "force",
+				DISPLAY: process.env.DISPLAY || "pi-remote-admin",
+				PI_REMOTE_ADMIN_ASKPASS_SOCKET: socketPath,
+			},
+			close: async () => {
+				for (const socket of sockets) socket.destroy();
+				await new Promise<void>((resolve) => server!.close(() => resolve()));
+				await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+			},
+		};
+	} catch (error) {
+		if (server) await new Promise<void>((resolve) => server!.close(() => resolve())).catch(() => undefined);
+		await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+		throw error;
+	}
+}
+
 class SshShellTransport {
 	private child: ChildProcessWithoutNullStreams | null = null;
 	private pending: PendingRun | null = null;
@@ -146,6 +261,7 @@ class SshShellTransport {
 	private stderrTail = "";
 	private sudoPromptSeen = false;
 	private startupBuffer = "";
+	private askPassSession: SshAskPassSession | null = null;
 
 	constructor(private readonly config: SshShellTransportConfig) {}
 
@@ -166,10 +282,14 @@ class SshShellTransport {
 		this.closed = false;
 		this.stderrTail = "";
 		this.sudoPromptSeen = false;
+		this.startupBuffer = "";
+		await this.closeAskPassSession();
+		const askPassSession = this.config.promptSshPassword ? await startSshAskPassSession(this.config.target, this.config.promptSshPassword) : null;
+		this.askPassSession = askPassSession;
 		const args = [
 			"-T",
 			"-o",
-			"BatchMode=yes",
+			askPassSession ? "BatchMode=no" : "BatchMode=yes",
 			"-o",
 			"StrictHostKeyChecking=accept-new",
 			"-o",
@@ -178,13 +298,22 @@ class SshShellTransport {
 			this.config.target,
 			...(this.config.startupCommand ? [this.config.startupCommand] : []),
 		];
-		const child = spawn("ssh", args, { stdio: "pipe" });
+		const child = spawn("ssh", args, {
+			stdio: "pipe",
+			env: askPassSession ? { ...process.env, ...askPassSession.env } : undefined,
+		});
 		this.child = child;
 
 		child.stdout.on("data", (data: Buffer) => this.handleStdout(data));
 		child.stderr.on("data", (data: Buffer) => this.handleStderr(data));
-		child.on("error", (error) => this.failPending(error));
+		child.on("error", (error) => {
+			if (this.child !== child) return;
+			void this.closeAskPassSession();
+			this.failPending(error);
+		});
 		child.on("close", (code, signal) => {
+			if (this.child !== child) return;
+			void this.closeAskPassSession();
 			const error = new Error(`SSH transport closed${code === null ? "" : ` with code ${code}`}${signal ? ` (${signal})` : ""}${this.stderrTail ? `: ${this.stderrTail.trim()}` : ""}`);
 			this.child = null;
 			this.failPending(error);
@@ -345,16 +474,27 @@ class SshShellTransport {
 		pending.reject(error);
 	}
 
+	private async closeAskPassSession(): Promise<void> {
+		const session = this.askPassSession;
+		this.askPassSession = null;
+		if (!session) return;
+		await session.close().catch(() => undefined);
+	}
+
 	async close(): Promise<void> {
 		this.closed = true;
 		const child = this.child;
 		this.child = null;
-		if (!child) return;
+		if (!child) {
+			await this.closeAskPassSession();
+			return;
+		}
 		child.stdin.destroy();
 		child.kill("SIGTERM");
 		setTimeout(() => {
 			if (!child.killed) child.kill("SIGKILL");
 		}, 1000).unref();
+		await this.closeAskPassSession();
 	}
 }
 
@@ -365,7 +505,7 @@ class ElevationManager {
 
 	constructor(
 		private readonly config: RemoteAdminConfig,
-		private readonly promptPassword: (ctx: ExtensionCommandContext | ExtensionContext, prompt: string) => Promise<string | undefined>,
+		private readonly promptPassword: (ctx: ExtensionCommandContext | ExtensionContext, prompt: string, title?: string) => Promise<string | undefined>,
 	) {}
 
 	isActive(): boolean {
@@ -392,16 +532,16 @@ class ElevationManager {
 		let transport: SshShellTransport;
 
 		try {
-			transport = await this.startSudoTransport("-n");
+			transport = await this.startSudoTransport(ctx, "-n");
 		} catch (error) {
 			if (!isSudoPasswordRequired(error)) throw new Error(`failed to start elevated shell: ${errorMessage(error)}`);
 
-			let password = await this.promptPassword(ctx, `Sudo password for ${this.config.target}`);
+			let password = await this.promptPassword(ctx, `Sudo password for ${this.config.target}`, "Remote sudo password");
 			if (password === undefined) throw new Error("sudo authentication cancelled");
 
 			try {
 				const sudoPrompt = randomToken("__PI_REMOTE_ADMIN_SUDO_PROMPT");
-				transport = await this.startSudoTransport(`-S -p ${shQuote(sudoPrompt)}`, sudoPrompt, async () => password);
+				transport = await this.startSudoTransport(ctx, `-S -p ${shQuote(sudoPrompt)}`, sudoPrompt, async () => password);
 			} catch (passwordError) {
 				throw new Error(`sudo authentication failed: ${errorMessage(passwordError)}`);
 			} finally {
@@ -416,7 +556,12 @@ class ElevationManager {
 		return transport;
 	}
 
-	private async startSudoTransport(sudoArgs: string, sudoPrompt?: string, getSudoPassword?: () => Promise<string | undefined>): Promise<SshShellTransport> {
+	private async startSudoTransport(
+		ctx: ExtensionCommandContext | ExtensionContext,
+		sudoArgs: string,
+		sudoPrompt?: string,
+		getSudoPassword?: () => Promise<string | undefined>,
+	): Promise<SshShellTransport> {
 		const readyToken = randomToken("__PI_REMOTE_ADMIN_ROOT_READY");
 		const transport = new SshShellTransport({
 			...this.config,
@@ -424,6 +569,7 @@ class ElevationManager {
 			startupReadyToken: readyToken,
 			sudoPrompt,
 			getSudoPassword,
+			promptSshPassword: this.config.usePassword ? (prompt) => this.promptPassword(ctx, prompt, "Remote SSH password") : undefined,
 		});
 
 		try {
@@ -578,15 +724,16 @@ function createRemoteBashOps(context: RemoteContext): BashOperations {
 	};
 }
 
-function renderPasswordDialog(prompt: string, passwordLength: number, width: number): string[] {
+function renderPasswordDialog(title: string, prompt: string, passwordLength: number, width: number): string[] {
 	const innerWidth = Math.max(20, width - 2);
 	const inputWidth = Math.max(12, Math.min(innerWidth - 4, 60));
 	const masked = "•".repeat(passwordLength).slice(-inputWidth).padEnd(inputWidth, " ");
 	const line = (text: string) => `│ ${text.slice(0, innerWidth - 2).padEnd(innerWidth - 2, " ")} │`;
+	const promptLines = prompt.split(/\r?\n/).map((part) => part.trim()).filter(Boolean).slice(0, 3);
 	return [
 		`╭${"─".repeat(innerWidth)}╮`,
-		line("Remote sudo password"),
-		line(prompt),
+		line(title),
+		...(promptLines.length ? promptLines.map(line) : [line("")]),
 		line(`[${masked}]`),
 		line("Enter to submit · Esc to cancel"),
 		`╰${"─".repeat(innerWidth)}╯`,
@@ -723,8 +870,8 @@ type RemoteState = {
 	bashTool: ReturnType<typeof createBashToolDefinition>;
 };
 
-async function promptMaskedPassword(ctx: ExtensionCommandContext | ExtensionContext, prompt: string): Promise<string | undefined> {
-	if (!ctx.hasUI) throw new Error("Sudo password prompt requires interactive mode");
+async function promptMaskedPassword(ctx: ExtensionCommandContext | ExtensionContext, prompt: string, title = "Remote password"): Promise<string | undefined> {
+	if (!ctx.hasUI) throw new Error("Password prompt requires interactive mode");
 	return withMacSecureInput(() =>
 		ctx.ui.custom<string | undefined>(
 		(tui, _theme, keybindings, done) => {
@@ -766,7 +913,7 @@ async function promptMaskedPassword(ctx: ExtensionCommandContext | ExtensionCont
 			};
 
 			return {
-				render: (width: number) => renderPasswordDialog(prompt, password.length, width),
+				render: (width: number) => renderPasswordDialog(title, prompt, password.length, width),
 				handleInput(data: string): void {
 					if (keybindings.matches(data, "tui.select.cancel") || data === "\x03") return close(undefined);
 					if (keybindings.matches(data, "tui.input.submit") || data === "\r" || data === "\n") return close(password);
@@ -832,30 +979,38 @@ async function resolveRemoteHostname(transport: SshShellTransport, fallback: str
 	return result.exitCode === 0 && hostname ? hostname : fallback;
 }
 
-async function createRemoteState(config: RemoteAdminConfig, localCwd: string): Promise<RemoteState> {
-	const normalTransport = new SshShellTransport(config);
-	await normalTransport.start();
-	await checkRemoteRequirements(normalTransport);
-	const [cwd, displayHost] = await Promise.all([
-		prepareRemoteCwd(normalTransport, config.cwd),
-		resolveRemoteHostname(normalTransport, config.target),
-	]);
-	const resolvedConfig = { ...config, cwd };
+async function createRemoteState(config: RemoteAdminConfig, localCwd: string, ctx: ExtensionContext): Promise<RemoteState> {
+	if (config.usePassword && !ctx.hasUI) throw new Error("--use-password requires interactive mode");
+	const normalTransport = new SshShellTransport({
+		...config,
+		promptSshPassword: config.usePassword ? (prompt) => promptMaskedPassword(ctx, prompt, "Remote SSH password") : undefined,
+	});
+	try {
+		await checkRemoteRequirements(normalTransport);
+		const [cwd, displayHost] = await Promise.all([
+			prepareRemoteCwd(normalTransport, config.cwd),
+			resolveRemoteHostname(normalTransport, config.target),
+		]);
+		const resolvedConfig = { ...config, cwd };
 
-	const elevation = new ElevationManager(resolvedConfig, promptMaskedPassword);
-	const selectTransport = (): SshShellTransport => elevation.getTransport() ?? normalTransport;
-	const context: RemoteContext = { cwd: resolvedConfig.cwd, toRemote: createPathMapper(localCwd, resolvedConfig.cwd), selectTransport };
-	return {
-		config: resolvedConfig,
-		displayHost,
-		normalTransport,
-		elevation,
-		context,
-		readTool: createReadToolDefinition(localCwd, { operations: createRemoteReadOps(context) }),
-		writeTool: createWriteToolDefinition(localCwd, { operations: createRemoteWriteOps(context) }),
-		editTool: createEditToolDefinition(localCwd, { operations: createRemoteEditOps(context) }),
-		bashTool: createBashToolDefinition(localCwd, { operations: createRemoteBashOps(context) }),
-	};
+		const elevation = new ElevationManager(resolvedConfig, promptMaskedPassword);
+		const selectTransport = (): SshShellTransport => elevation.getTransport() ?? normalTransport;
+		const context: RemoteContext = { cwd: resolvedConfig.cwd, toRemote: createPathMapper(localCwd, resolvedConfig.cwd), selectTransport };
+		return {
+			config: resolvedConfig,
+			displayHost,
+			normalTransport,
+			elevation,
+			context,
+			readTool: createReadToolDefinition(localCwd, { operations: createRemoteReadOps(context) }),
+			writeTool: createWriteToolDefinition(localCwd, { operations: createRemoteWriteOps(context) }),
+			editTool: createEditToolDefinition(localCwd, { operations: createRemoteEditOps(context) }),
+			bashTool: createBashToolDefinition(localCwd, { operations: createRemoteBashOps(context) }),
+		};
+	} catch (error) {
+		await normalTransport.close();
+		throw error;
+	}
 }
 
 function parseSshTarget(value: string): { target: string; cwd: string } {
@@ -872,12 +1027,14 @@ function buildConfig(pi: ExtensionAPI): RemoteAdminConfig | null {
 		target,
 		cwd,
 		sshArgs: splitSshArgs(pi.getFlag("ssh-arg")),
+		usePassword: Boolean(pi.getFlag("use-password")),
 	};
 }
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("ssh", { description: "SSH remote: user@host or user@host:/path", type: "string" });
 	pi.registerFlag("ssh-arg", { description: "Extra SSH arg(s)", type: "string" });
+	pi.registerFlag("use-password", { description: "Prompt locally for SSH login password/key passphrase when used with --ssh", type: "boolean" });
 
 	const localCwd = process.cwd();
 	const localRead = createReadToolDefinition(localCwd);
@@ -1044,7 +1201,7 @@ export default function (pi: ExtensionAPI) {
 		registerCommands();
 		pi.setActiveTools([...new Set([...pi.getActiveTools(), ...REMOTE_ADMIN_TOOL_NAMES])]);
 		try {
-			remoteState = await createRemoteState(config, localCwd);
+			remoteState = await createRemoteState(config, localCwd, ctx);
 			setStatus(ctx);
 			ctx.ui.notify(`Remote admin connected: ${remoteState.config.target}:${remoteState.config.cwd}`, "info");
 			warnIfRtkExtensionLoaded(ctx);

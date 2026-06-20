@@ -28,16 +28,37 @@ if [[ -n "$count_file" ]]; then
   [[ -f "$count_file" ]] && n=$(cat "$count_file")
   echo $((n + 1)) > "$count_file"
 fi
+batch_mode=yes
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -T|-tt) shift ;;
-    -o|-p) shift 2 ;;
+    -o)
+      [[ "$2" == "BatchMode=no" ]] && batch_mode=no
+      [[ "$2" == "BatchMode=yes" ]] && batch_mode=yes
+      shift 2
+      ;;
+    -p) shift 2 ;;
     --) shift; break ;;
     *) break ;;
   esac
 done
 remote="$1"; shift
 cmd="$*"
+if [[ "\${PI_FAKE_SSH_REQUIRE_PASSWORD:-}" == "1" ]]; then
+  if [[ "$batch_mode" == "yes" ]]; then
+    echo "Permission denied (publickey,password)." >&2
+    exit 255
+  fi
+  if [[ -z "\${SSH_ASKPASS:-}" ]]; then
+    echo "missing SSH_ASKPASS" >&2
+    exit 255
+  fi
+  password=$("$SSH_ASKPASS" "$remote's password:") || exit 255
+  if [[ "$password" != "\${PI_FAKE_SSH_PASSWORD:-opensesame}" ]]; then
+    echo "Permission denied, please try again." >&2
+    exit 255
+  fi
+fi
 if [[ -n "$cmd" ]]; then
   exec bash -c "$cmd"
 else
@@ -46,10 +67,53 @@ fi
 `);
 chmodSync(join(tmp, 'ssh'), 0o755);
 
+writeFileSync(join(tmp, 'stat'), `#!/usr/bin/env bash
+if [[ "$1" == "-c" && "$2" == "%s" ]]; then
+  shift 2
+  for file in "$@"; do
+    wc -c < "$file" | tr -d ' '
+  done
+else
+  exec /usr/bin/stat "$@"
+fi
+`);
+chmodSync(join(tmp, 'stat'), 0o755);
+
+writeFileSync(join(tmp, 'base64'), `#!/usr/bin/env bash
+if [[ "$1" == "-w" && "$2" == "0" ]]; then
+  shift 2
+  if [[ $# -gt 0 ]]; then
+    /usr/bin/base64 -i "$1" | tr -d '\\n'
+  else
+    /usr/bin/base64 | tr -d '\\n'
+  fi
+elif [[ "$1" == "-d" ]]; then
+  shift
+  if [[ $# -gt 0 ]]; then
+    /usr/bin/base64 -D -i "$1"
+  else
+    /usr/bin/base64 -D
+  fi
+else
+  exec /usr/bin/base64 "$@"
+fi
+`);
+chmodSync(join(tmp, 'base64'), 0o755);
+
 process.env.PATH = `${tmp}:${process.env.PATH}`;
 process.env.PI_FAKE_SSH_COUNT = countFile;
+process.env.PI_FAKE_SSH_REQUIRE_PASSWORD = '1';
+process.env.PI_FAKE_SSH_PASSWORD = 'opensesame';
 
-function makeUi() {
+function makeUi({ password } = {}) {
+  const keybindings = {
+    matches: (data, action) => {
+      if (action === 'tui.input.submit') return data === '\r' || data === '\n';
+      if (action === 'tui.select.cancel') return data === '\x1b';
+      if (action === 'tui.editor.deleteCharBackward') return data === '\x7f' || data === '\b';
+      return false;
+    },
+  };
   return {
     select: async () => undefined,
     confirm: async () => true,
@@ -65,7 +129,14 @@ function makeUi() {
     setFooter: () => {},
     setHeader: () => {},
     setTitle: () => {},
-    custom: async () => undefined,
+    custom: async (factory) => {
+      if (password === undefined) return undefined;
+      let result;
+      const component = factory({ requestRender: () => {} }, {}, keybindings, (value) => { result = value; });
+      for (const char of password) component.handleInput?.(char);
+      component.handleInput?.('\r');
+      return result;
+    },
     pasteToEditor: () => {},
     setEditorText: () => {},
     getEditorText: () => '',
@@ -85,9 +156,10 @@ function makeUi() {
 try {
   const result = await discoverAndLoadExtensions(['.'], process.cwd());
   result.runtime.flagValues.set('ssh', `fake:${remoteCwd}`);
+  result.runtime.flagValues.set('use-password', true);
   const ext = result.extensions.find((e) => e.path.includes('remote-admin'));
   const runner = new ExtensionRunner([ext], result.runtime, process.cwd(), { getSessionFile: () => undefined }, { getApiKeyAndHeaders: async () => ({ ok: false }) });
-  const ui = makeUi();
+  const ui = makeUi({ password: 'opensesame' });
   const ctx = { ui, hasUI: true };
 
   runner.bindCore(
@@ -119,7 +191,7 @@ try {
 
   const read = runner.getToolDefinition('read');
   const readResult = await read.execute('read', { path: 'round.txt' }, undefined, undefined, ctx);
-  if (readResult.content[0].text !== 'hello\nworld\n') throw new Error('read output mismatch');
+  if (readResult.content[0].text !== 'hello\nworld\n') throw new Error(`read output mismatch: ${JSON.stringify(readResult.content)}`);
 
   const edit = runner.getToolDefinition('edit');
   await edit.execute('edit', { path: 'round.txt', edits: [{ oldText: 'world', newText: 'remote' }] }, undefined, undefined, ctx);

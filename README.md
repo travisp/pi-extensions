@@ -19,13 +19,14 @@ pi install git:github.com/travisp/pi-remote-ssh-admin
 ```bash
 pi --ssh debian@1.2.3.4
 pi --ssh debian@1.2.3.4:/srv/app
+pi --ssh debian@1.2.3.4 --use-password
 ```
 
 The extension is inactive unless `--ssh` is passed.
 
 ## Remote requirements
 
-- SSH key-based auth from the local Pi machine (does not currently prompt for initial login)
+- SSH key-based auth from the local Pi machine, or `--use-password` in interactive TUI mode (masked local popup)
 - a remote login shell that accepts standard shell commands
 - standard Debian-like tools: `mv`, `mkdir`, `rm`, `mktemp`, GNU `base64`, and `stat`
 
@@ -40,6 +41,8 @@ ssh -T user@host
 ```
 
 Each command is queued and wrapped with a random high-entropy sentinel line. The transport reads output until the exact sentinel line for that command appears. Timeouts kill the SSH process; the next command starts a fresh transport.
+
+With `--use-password`, if SSH asks for a login password or key passphrase, the extension uses a local `SSH_ASKPASS` helper to show a masked Pi popup. The password is passed directly to the local `ssh` process and is not shown to the model.
 
 File reads and writes use base64 through the shell stream, so binary files are not sent as raw terminal data. The maximum file size is 25 MiB.
 
@@ -89,6 +92,8 @@ After approval, the extension starts a second SSH transport running a root shell
 
 "Security" properties:
 
+- with `--use-password`, SSH login passwords/key passphrases are prompted locally in a masked popup when `ssh` asks for them
+- SSH passwords are not passed in command-line args or environment variables, and are not intentionally written to disk
 - the sudo password is prompted locally only when sudo reports that one is required
 - on macOS, the local password prompt attempts to enable Secure Keyboard Entry while active
 - the password is only sent after the expected random sudo prompt appears
@@ -114,6 +119,9 @@ While the elevated session is active, the default remote tools use the root tran
 
 --ssh-arg <arg>
     Extra SSH arg(s). Quote as needed for your shell.
+
+--use-password
+    Enable masked popup prompting for SSH login password/key passphrase.
 ```
 
 ## Optional pi-powerline-footer setup
