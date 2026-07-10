@@ -6,7 +6,9 @@
 
 Customizes the default [pi](https://github.com/badlogic/pi-mono) editor with a powerline-style status bar, welcome overlay, and AI-generated "vibes" for loading messages. Inspired by [Powerlevel10k](https://github.com/romkatv/powerlevel10k) and [oh-my-pi](https://github.com/can1357/oh-my-pi).
 
-<img width="1261" height="817" alt="Image" src="https://github.com/user-attachments/assets/4cc43320-3fb8-4503-b857-69dffa7028f2" />
+<img width="1261" height="817" alt="Example powerline UI" src="https://github.com/user-attachments/assets/4cc43320-3fb8-4503-b857-69dffa7028f2" />
+
+The screenshot is illustrative and may differ from current Pi versions. The supported surface is the fixed-editor powerline cluster; the older oh-my-pi-style editor chrome is not configurable today.
 
 ## Features
 
@@ -14,11 +16,11 @@ Customizes the default [pi](https://github.com/badlogic/pi-mono) editor with a p
 
 **Working Vibes** — AI-generated themed loading messages. Set `/vibe star trek` and your "Working..." becomes "Running diagnostics..." or "Engaging warp drive...". Supports any theme: pirate, zen, noir, cowboy, etc.
 
-**Welcome overlay** — Branded splash screen shown as centered overlay on startup. Shows gradient logo, model info, keyboard tips, loaded AGENTS.md/extensions/skills/templates counts, and recent sessions. Auto-dismisses after 30 seconds or on any key press.
+**Welcome overlay** — Branded splash screen shown as centered overlay on startup. Shows gradient logo, model info, keyboard tips, loaded AGENTS.md/extensions/skills/templates counts, and recent sessions. Auto-dismisses after 30 seconds or on any key press. Set `powerline.welcome` to `false` to disable it while keeping the footer enabled.
 
 **Rounded box design** — Status renders directly in the editor's top border, not as a separate footer.
 
-**Fixed editor cluster** — In interactive TUI sessions, chat/feed content scrolls above the fixed Pi working/status line, powerline rows, editor, ghost suggestions, bash transcript, and last-prompt/status rows. Scroll chat with the mouse wheel, PageUp/PageDown, Command+PageUp/PageDown, Ctrl+Shift+Up/Down, or message-jump shortcuts; the editor stays put. Drag text to copy it, drag selection to the viewport edge to scroll, double-click a line to select it, and right-click to open the terminal menu. Use `/powerline fixed-editor off` for Pi’s regular scrolling layout, or `/powerline mouse-scroll off` for native terminal selection.
+**Fixed editor cluster** — In interactive TUI sessions, chat/feed content scrolls above the fixed Pi working/status line, powerline rows, editor, ghost suggestions, bash transcript, and last-prompt/status rows. Scroll chat with the mouse wheel, PageUp/PageDown, Command+PageUp/PageDown, Ctrl+Shift+Up/Down, or message-jump shortcuts; the editor stays put. When you are scrolled away from the bottom, a stacked shortcut hint card appears over the bottom of the chat viewport with the configured bottom, user-message, and assistant-response jump shortcuts. When mouse scrolling is enabled, click anywhere in that card to jump back to the bottom. Drag text to copy it, drag selection to the viewport edge to scroll, double-click a line to select it, and right-click to open the terminal menu. Use `/powerline fixed-editor off` for Pi’s regular scrolling layout, or `/powerline mouse-scroll off` for native terminal selection.
 
 **Live thinking level indicator** — Shows current thinking level (`think:off`, `think:med`, etc.) with per-level colors. High and xhigh levels use a rainbow effect inspired by Claude Code's ultrathink.
 
@@ -28,7 +30,7 @@ Customizes the default [pi](https://github.com/badlogic/pi-mono) editor with a p
 
 **Context awareness** — Color-coded warnings at 70% (yellow) and 90% (red) context usage. During streaming, the context segment refreshes from live assistant usage instead of waiting for the next turn. Auto-compact indicator when enabled. If `pi-custom-compaction` is installed and enabled, the powerline automatically hides native context segments so the footer does not show stale post-summary usage.
 
-**Token intelligence** — Smart formatting (1.2k, 45M), cumulative cache read/write counts, latest prompt cache hit rate (`CH`), and subscription detection (shows "(sub)" vs dollar cost).
+**Token intelligence** — Smart formatting (1.2k, 45M), cumulative cache read/write counts, latest prompt cache hit rate (`CH`), subscription detection, and configurable subscription cost display.
 
 **Sticky bash mode** — Toggle bash mode with `ctrl+shift+b` or `/bash-mode`. It keeps a managed shell session alive for the current pi session, shows a dedicated `shell_mode` segment, streams command output into an embedded transcript below the editor, and lets `cd` or exported state persist across commands.
 
@@ -52,18 +54,20 @@ Fixed editor is on by default.
 - `/powerline fixed-editor on` — re-enable the fixed editor
 - `/powerline fixed-editor toggle` — switch between the two
 
-You can also set it in `~/.pi/agent/settings.json` or project-local `.pi/settings.json`:
+You can also set it in the agent settings file (`~/.pi/agent/settings.json` by default, or under `PI_CODING_AGENT_DIR`) or project-local `.pi/settings.json`:
 
 ```json
 {
   "powerline": {
     "preset": "default",
-    "fixedEditor": false
+    "fixedEditor": false,
+    "welcome": true,
+    "mouseScroll": true
   }
 }
 ```
 
-Use `"fixedEditor": true` to enable it again. Add `"mouseScroll": false` if you want native terminal selection instead of fixed-editor mouse handling.
+Use `"fixedEditor": true` to enable it again. Set `"welcome": false` to skip the startup welcome overlay/header while leaving powerline itself enabled. Add `"mouseScroll": false` if you want native terminal selection instead of fixed-editor mouse handling. In Herdr, tmux, and other terminal multiplexers, fixed-editor scrolling is Pi-owned while fixed-editor mode is on; keep mouse scrolling enabled for the fixed-editor viewport, or use `/powerline fixed-editor off` when you want the host multiplexer scrollback to own the experience. Terminal-native URL Ctrl-click also needs `/powerline mouse-scroll off` or `/powerline fixed-editor off` while fixed-editor mouse reporting is enabled.
 
 | Preset | Description |
 |--------|-------------|
@@ -76,7 +80,7 @@ Use `"fixedEditor": true` to enable it again. Add `"mouseScroll": false` if you 
 
 **Environment:** `POWERLINE_NERD_FONTS=1` to force Nerd Fonts, `=0` for ASCII.
 
-Preset selection is saved to `~/.pi/agent/settings.json` under `powerline` and restored on startup.
+Preset selection is saved under `powerline` in the agent settings file and restored on startup.
 Run `/powerline default` to switch back to the default preset.
 
 ### Custom items from extension statuses
@@ -119,7 +123,34 @@ You can promote any extension status key into its own dedicated powerline item. 
 - `hideWhenMissing` (optional): hide item when no status is present (default `true`)
 - `excludeFromExtensionStatuses` (optional): omit this key from the aggregate `extension_statuses` segment (default `true`)
 
-If you still prefer the old style, `"powerline": "default"` continues to work.
+If you still prefer the older string preset config shape, `"powerline": "default"` continues to work. String preset shorthand keeps `welcome` enabled and uses the default shortcut/cost/model display settings.
+
+### Demo settings
+
+For a compact current footer setup:
+
+```json
+{
+  "powerline": {
+    "preset": "default",
+    "fixedEditor": true,
+    "mouseScroll": true,
+    "path": { "mode": "basename" },
+    "model": { "display": "name" },
+    "cost": { "subscriptionDisplay": "subscription" }
+  }
+}
+```
+
+Use `"model": { "display": "qualified" }` when two providers expose models with the same display name.
+
+Subscription cost display accepts:
+
+| Mode | Subscription + reported cost | Subscription + no reported cost |
+|------|------------------------------|----------------------------------|
+| `subscription` | `(sub)` | `(sub)` |
+| `reported-cost` | `$0.12` | `(sub)` |
+| `both` | `$0.12 (sub)` | `(sub)` |
 
 ## Bash mode
 
@@ -145,7 +176,7 @@ The managed shell is persistent for the current pi session. Command output appea
 
 ### Bash mode configuration
 
-In `~/.pi/agent/settings.json`:
+In `~/.pi/agent/settings.json` (or under `PI_CODING_AGENT_DIR` when that environment variable is set):
 
 ```json
 {
@@ -159,7 +190,7 @@ In `~/.pi/agent/settings.json`:
 
 ## Editor Stash
 
-Use `Alt+S` / `Option+S` as a quick stash toggle while drafting. It keeps one active stash and clears the editor when stashing.
+Use `Alt+S` / `Option+S` as a quick stash toggle while drafting. It keeps one active stash and clears the editor when stashing. Powerline listens for unambiguous Alt/Meta-S escape encodings by default. If your old terminal setup only emits the printable German sharp-S character for Option+S and you still want that to trigger stash, set `"stashSharpSShortcut": true` under `powerline`.
 
 | Editor | Stash | `Alt+S` result |
 |--------|-------|----------------|
@@ -170,7 +201,7 @@ Use `Alt+S` / `Option+S` as a quick stash toggle while drafting. It keeps one ac
 
 Auto-restore after an agent run only happens when the editor is still empty. If you typed meanwhile, the stash is preserved.
 
-The `stash` indicator appears in the powerline bar (on presets with `extension_statuses`). Active stash is still session-local and resets on session switch / disable, but stash history is persisted to `~/.pi/agent/powerline-footer/stash-history.json` so it survives restarts.
+The `stash` indicator appears in the powerline bar (on presets with `extension_statuses`). Active stash is still session-local and resets on session switch / disable, but stash history is persisted to the agent dir at `powerline-footer/stash-history.json` so it survives restarts. By default the agent dir is `~/.pi/agent`; set `PI_CODING_AGENT_DIR` to move global powerline settings, stash history, sessions, vibes, skills, commands, and extension discovery with Pi.
 
 ### Stash history
 
@@ -198,12 +229,13 @@ Selecting an entry inserts it into the editor. If the editor already has text, y
 - `ctrl+shift+i` — jump the fixed-editor chat viewport to the next user message
 - `ctrl+alt+,` — jump the fixed-editor chat viewport to the previous LLM message
 - `ctrl+alt+.` — jump the fixed-editor chat viewport to the next LLM message
-- `ctrl+shift+g` — jump the fixed-editor chat viewport to the bottom
-Copy/cut actions do not modify stash state or stash history. Dragging files, folders, images, or screenshots from Finder into the custom editor inserts their path strings. Chat jumps require fixed-editor mode because they use its app-owned scroll viewport. Submitting editor text also returns that viewport to the bottom so new output stays in view.
+- `ctrl+alt+g` — jump the fixed-editor chat viewport to the bottom
+
+Copy/cut actions do not modify stash state or stash history. Dragging files, folders, images, or screenshots from Finder into the custom editor inserts their path strings. Chat jumps require fixed-editor mode because they use its app-owned scroll viewport. When fixed-editor chat is scrolled away from the bottom, the viewport shows a shortcut hint card with these configured shortcut labels; with mouse scrolling enabled, clicking anywhere in the card jumps to the bottom. Submitting editor text also returns that viewport to the bottom so new output stays in view.
 
 ### Shortcut configuration
 
-You can override shortcut keys in `~/.pi/agent/settings.json`:
+You can override shortcut keys in the agent settings file:
 
 ```json
 {
@@ -215,7 +247,7 @@ You can override shortcut keys in `~/.pi/agent/settings.json`:
     "jumpNextUserMessage": "ctrl+shift+i",
     "jumpPreviousLlmMessage": "ctrl+alt+,",
     "jumpNextLlmMessage": "ctrl+alt+.",
-    "jumpChatBottom": "ctrl+shift+g",
+    "jumpChatBottom": "ctrl+alt+g",
     "scrollChatUp": "cmd+up",
     "scrollChatDown": "cmd+down",
     "editorStart": "cmd+shift+up",
@@ -224,7 +256,11 @@ You can override shortcut keys in `~/.pi/agent/settings.json`:
 }
 ```
 
-After changing bindings, run `/reload`. Invalid bindings, reserved key conflicts (like `Alt+S`), or duplicate conflicts automatically fall back to safe defaults. `cmd` and `command` are accepted aliases for Pi's `super` modifier for the documented Command navigation keys; unsupported Command-letter bindings such as `cmd+c` are ignored instead of matching plain text input. Some terminals, including Ghostty, bind Command+Arrow themselves; remap those terminal keys to send `\x1b[1;9A` / `\x1b[1;9B` for chat scrolling and `\x1b[1;10A` / `\x1b[1;10B` for editor-boundary navigation if you want Pi to receive them.
+After changing bindings, run `/reload`. Invalid bindings, reserved key conflicts (like `Alt+S`), or duplicate conflicts automatically fall back to safe defaults. Set a binding to `null` or `""` to disable that action; disabled actions are not registered, do not match raw terminal fallbacks, and are omitted from the fixed-editor scroll-away hint card. `bashMode.toggleShortcut` also accepts `null` or `""` to disable the keyboard toggle while keeping `/bash-mode` available. `cmd` and `command` are accepted aliases for Pi's `super` modifier for the documented Command navigation keys; unsupported Command-letter bindings such as `cmd+c` are ignored instead of matching plain text input. Some terminals, including Ghostty, bind Command+Arrow themselves; remap those terminal keys to send `\x1b[1;9A` / `\x1b[1;9B` for chat scrolling and `\x1b[1;10A` / `\x1b[1;10B` for editor-boundary navigation if you want Pi to receive them.
+
+### Editor autocomplete composition
+
+Powerline wraps Pi's autocomplete provider so bash mode can add shell-aware suggestions. When another editor extension was already installed, powerline now passes Pi's provider through that previous editor's `setAutocompleteProvider()` first and then wraps the resulting provider. This preserves prior autocomplete-provider wrappers where possible, but it is not full render/input composition between custom editors.
 
 ## Working Vibes
 
@@ -247,7 +283,7 @@ Transform boring "Working..." messages into themed phrases that match your style
 
 ### Configuration
 
-In `~/.pi/agent/settings.json`:
+In the agent settings file:
 
 ```json
 {
@@ -270,13 +306,13 @@ In `~/.pi/agent/settings.json`:
 
 **File mode setup:**
 ```bash
-/vibe generate mafia 200    # Generate 200 vibes, save to ~/.pi/agent/vibes/mafia.txt
+/vibe generate mafia 200    # Generate 200 vibes, save to the agent dir
 /vibe mode file             # Switch to file mode
 /vibe mafia                 # Now uses the file
 ```
 
 **How file mode works:**
-1. Vibes are loaded from `~/.pi/agent/vibes/{theme}.txt` into memory
+1. Vibes are loaded from `vibes/{theme}.txt` in the agent dir into memory
 2. Uses seeded shuffle (Mulberry32 PRNG) — cycles through all vibes before repeating
 3. New seed each session — different order every time you restart pi
 4. Zero latency, zero cost, works offline
@@ -365,7 +401,7 @@ Colors are configurable via pi's theme system. Each preset defines its own color
 
 ### Custom Theme Override
 
-Create `~/.pi/agent/extensions/powerline-footer/theme.json`:
+Create `extensions/powerline-footer/theme.json` in the agent dir:
 
 ```json
 {

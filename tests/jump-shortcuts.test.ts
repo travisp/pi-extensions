@@ -7,6 +7,7 @@ import {
   matchesConfiguredShortcut,
   shortcutConflictKey,
 } from "../shortcuts.ts";
+import { parseBashModeSettings, resolveShortcutConfig } from "../index.ts";
 
 const source = readFileSync(new URL("../index.ts", import.meta.url), "utf-8");
 
@@ -54,7 +55,7 @@ test("chat jump shortcuts are configurable and route through fixed editor scroll
   assert.equal(defaults.get("jumpNextUserMessage"), "ctrl+shift+i");
   assert.equal(defaults.get("jumpPreviousLlmMessage"), "ctrl+alt+,");
   assert.equal(defaults.get("jumpNextLlmMessage"), "ctrl+alt+.");
-  assert.equal(defaults.get("jumpChatBottom"), "ctrl+shift+g");
+  assert.equal(defaults.get("jumpChatBottom"), "ctrl+alt+g");
   assert.equal(defaults.get("scrollChatUp"), "super+up");
   assert.equal(defaults.get("scrollChatDown"), "super+down");
   assert.equal(defaults.get("editorStart"), "super+shift+up");
@@ -65,7 +66,8 @@ test("chat jump shortcuts are configurable and route through fixed editor scroll
   assert.match(source, /shortcutKey: "jumpPreviousLlmMessage"/);
   assert.match(source, /shortcutKey: "jumpNextLlmMessage"/);
   assert.match(source, /shortcutKey: "jumpChatBottom"/);
-  assert.match(source, /pi\.registerShortcut\(resolvedShortcuts\[shortcutKey\]/);
+  assert.match(source, /return chatJumpAction \? \{ kind: "chat", action: chatJumpAction \} : null/);
+  assert.doesNotMatch(source, /pi\.registerShortcut\(resolvedShortcuts\[shortcutKey\]/);
   assert.match(source, /function collectChatMessageStartLines\(role: ChatJumpRole\): number\[\]/);
   assert.match(source, /componentName === "UserMessageComponent"/);
   assert.match(source, /componentName === "SkillInvocationMessageComponent"/);
@@ -77,6 +79,12 @@ test("chat jump shortcuts are configurable and route through fixed editor scroll
   assert.match(source, /let resolvedShortcuts = resolveShortcutConfig\(startupSettings\)/);
   assert.match(source, /resolvedShortcuts = resolveShortcutConfig\(settings\)/);
   assert.match(source, /keyboardScrollShortcuts: \{\n\s+up: resolvedShortcuts\.scrollChatUp,\n\s+down: resolvedShortcuts\.scrollChatDown,/);
+  assert.match(source, /scrollAwayNavigationCard: \{/);
+  assert.match(source, /shortcuts: \[/);
+  assert.match(source, /scrollAwayShortcutEntry\("bottom", resolvedShortcuts\.jumpChatBottom\)/);
+  assert.match(source, /onClickBottom: resolvedShortcuts\.jumpChatBottom \? \(\) => jumpChatToBottom\(ctx\) : undefined/);
+  assert.match(source, /function formatShortcutLabel\(shortcut: ShortcutBinding\): string \| null/);
+  assert.match(source, /part\.toLowerCase\(\) === "super" \? "cmd" : part/);
   assert.match(source, /editorBoundaryShortcuts: \{\n\s+start: resolvedShortcuts\.editorStart,\n\s+end: resolvedShortcuts\.editorEnd,/);
   assert.match(source, /modifier === "cmd" \|\| modifier === "command" \? "super" : modifier/);
   assert.match(source, /shortcutUsesSuper\(normalizedShortcut\) && !isSupportedSuperShortcut\(normalizedShortcut\)/);
@@ -90,6 +98,8 @@ test("super shortcut matching rejects plain keys and unsupported command aliases
   assert.equal(matchesConfiguredShortcut("\x1b[1;9A", "super+up"), true);
   assert.equal(matchesConfiguredShortcut("\x1b[1;10A", "super+shift+up"), true);
   assert.equal(matchesConfiguredShortcut("\x1b[122;9u", "super+z"), false);
+  assert.equal(matchesConfiguredShortcut("\x1b\x07", "ctrl+alt+g"), true);
+  assert.equal(matchesConfiguredShortcut("\x1b[103;7u", "ctrl+alt+g"), true);
   assert.equal(isSupportedSuperShortcut("super+c"), false);
   assert.equal(isSupportedSuperShortcut("super+shift+x"), false);
   assert.equal(isSupportedSuperShortcut("super+z"), false);
@@ -126,7 +136,8 @@ test("context usage changes repaint from live streaming message usage", () => {
   assert.match(source, /pi\.on\("agent_start", async \(_event, ctx\) => \{\n\s+isStreaming = true;\n\s+liveAssistantUsage = null;\n\s+onVibeAgentStart\(\);\n\s+dismissWelcome\(ctx\);\n\s+currentCtx = ctx;\n\s+\}\);/);
   assert.match(source, /pi\.on\("message_update", async \(event, ctx\) => \{\n\s+if \(isSessionAssistantMessage\(event\.message\)\n\s+&& event\.message\.stopReason !== "error"\n\s+&& event\.message\.stopReason !== "aborted"\n\s+&& getUsageTokenTotal\(event\.message\.usage\) > 0\) \{\n\s+liveAssistantUsage = event\.message\.usage;\n\s+currentCtx = ctx;\n\s+layoutDirty = true;\n\s+statusRenderScheduler\.schedule\(CONTEXT_STATUS_RENDER_MS\);\n\s+\}\n\s+\}\);/);
   assert.match(source, /pi\.on\("message_end", async \(event, ctx\) => \{\n\s+currentCtx = ctx;\n\s+if \(isSessionAssistantMessage\(event\.message\)\) \{\n\s+if \(event\.message\.stopReason === "error" \|\| event\.message\.stopReason === "aborted"\) \{\n\s+liveAssistantUsage = null;\n\s+\} else if \(getUsageTokenTotal\(event\.message\.usage\) > 0\) \{\n\s+liveAssistantUsage = event\.message\.usage;\n\s+\}\n\s+\}\n\s+requestImmediateStatusRender\(\{ deferDuringTyping: false \}\);\n\s+\}\);/);
-  assert.match(source, /pi\.on\("agent_end", async \(_event, ctx\) => \{\n\s+isStreaming = false;\n\s+liveAssistantUsage = null;\n\s+currentCtx = ctx;/);
+  assert.match(source, /pi\.on\("agent_end", async \(_event, ctx\) => \{\n\s+isStreaming = false;\n\s+liveAssistantUsage = null;\n\n\s+let hasUI = false;/);
+  assert.match(source, /currentCtx = ctx;\n\s+try \{\n\s+if \(hasUI\)/);
   assert.match(source, /pi\.on\("session_tree", async \(_event, ctx\) => \{\n\s+currentCtx = ctx;\n\s+currentThinkingLevel = null;\n\s+liveAssistantUsage = null;\n\s+requestImmediateStatusRender\(\{ deferDuringTyping: false \}\);\n\s+\}\);/);
   assert.match(source, /if \(getUsageTokenTotal\(m\.usage\) > 0\) \{\n\s+lastAssistant = m;\n\s+\}/);
   assert.match(source, /const coreContextUsage = isStreaming && liveAssistantUsage \? null : readCoreContextUsage\(ctx\)/);
@@ -160,7 +171,7 @@ test("fixed editor captures Pi status messages with the editor cluster", () => {
 });
 
 test("shutdown cleanup resets terminal modes even before compositor install", () => {
-  assert.match(source, /import \{ emergencyTerminalModeReset, TerminalSplitCompositor \}/);
+  assert.match(source, /import \{ DEFAULT_SCROLL_REPAINT_THROTTLE_MS, emergencyTerminalModeReset, TerminalSplitCompositor \}/);
   assert.match(source, /const hadCompositor = fixedEditorCompositor !== null/);
   assert.match(source, /if \(!hadCompositor && options\?\.resetExtendedKeyboardModes\)/);
   assert.match(source, /process\.stdout\.write\(emergencyTerminalModeReset\(\)\)/);
@@ -200,7 +211,71 @@ test("powerline fallback routing rejects reserved Pi shortcut defaults", () => {
   assert.match(source, /const SHORTCUT_MODIFIER_ORDER = \["ctrl", "alt", "super", "shift"\] as const/);
   assert.match(source, /const SHORTCUT_MODIFIERS = new Set\(SHORTCUT_MODIFIER_ORDER\)/);
   assert.match(source, /modifierRank\.get\(a\)/);
-  assert.match(source, /configuredToggleShortcut && !reservedShortcuts\(\)\.has\(shortcutUsageKey\(configuredToggleShortcut\)\)/);
+  assert.match(source, /const used = new Set\(Array\.from\(reservedShortcuts\(\), shortcutUsageKey\)\)/);
+  assert.match(source, /parseBashModeSettings\(settings, resolvedShortcuts\)/);
+});
+
+test("powerline shortcuts support explicit disabled bindings", () => {
+  const resolved = resolveShortcutConfig({
+    powerlineShortcuts: {
+      stashHistory: "",
+      copyEditor: null,
+      cutEditor: "ctrl+alt+x",
+      jumpPreviousUserMessage: undefined,
+      jumpChatBottom: null,
+      scrollChatUp: "",
+    },
+  });
+  const bashMode = parseBashModeSettings({ bashMode: { toggleShortcut: undefined } });
+
+  assert.equal(resolved.stashHistory, null);
+  assert.equal(resolved.copyEditor, null);
+  assert.equal(resolved.cutEditor, "ctrl+alt+x");
+  assert.equal(resolved.jumpPreviousUserMessage, null);
+  assert.equal(resolved.jumpChatBottom, null);
+  assert.equal(resolved.scrollChatUp, null);
+  assert.equal(resolved.scrollChatDown, "super+down");
+  assert.equal(bashMode.toggleShortcut, null);
+  assert.equal(matchesConfiguredShortcut("\x1b\x07", resolved.jumpChatBottom), false);
+  assert.equal(matchesConfiguredShortcut("\x1b[1;9A", resolved.scrollChatUp), false);
+});
+
+test("powerline shortcut resolver reserves the active bash-mode toggle", () => {
+  const settings = { powerlineShortcuts: { copyEditor: "ctrl+shift+b" } };
+  const resolved = resolveShortcutConfig(settings);
+  const bashMode = parseBashModeSettings(settings, resolved);
+
+  assert.notEqual(resolved.copyEditor, "ctrl+shift+b");
+  assert.equal(bashMode.toggleShortcut, "ctrl+shift+b");
+
+  const disabledBash = { bashMode: { toggleShortcut: null }, powerlineShortcuts: { copyEditor: "ctrl+shift+b" } };
+  const resolvedWhenDisabled = resolveShortcutConfig(disabledBash);
+  const bashModeWhenDisabled = parseBashModeSettings(disabledBash, resolvedWhenDisabled);
+
+  assert.equal(resolvedWhenDisabled.copyEditor, "ctrl+shift+b");
+  assert.equal(bashModeWhenDisabled.toggleShortcut, null);
+});
+
+test("powerline shortcut resolver rejects active fixed-editor scroll aliases", () => {
+  const resolved = resolveShortcutConfig({
+    powerlineShortcuts: {
+      jumpChatBottom: "super+pageup",
+      copyEditor: "ctrl+shift+up",
+    },
+  });
+
+  assert.notEqual(resolved.jumpChatBottom, "super+pageup");
+  assert.notEqual(resolved.copyEditor, "ctrl+shift+up");
+
+  const allowedWhenScrollDisabled = resolveShortcutConfig({
+    powerlineShortcuts: {
+      scrollChatUp: null,
+      jumpChatBottom: "super+pageup",
+    },
+  });
+
+  assert.equal(allowedWhenScrollDisabled.scrollChatUp, null);
+  assert.equal(allowedWhenScrollDisabled.jumpChatBottom, "super+pageup");
 });
 
 test("powerline shortcuts have terminal-input fallback routing", () => {
@@ -209,11 +284,16 @@ test("powerline shortcuts have terminal-input fallback routing", () => {
   assert.match(source, /matchesConfiguredShortcut\(data, resolvedShortcuts\.copyEditor\)/);
   assert.match(source, /matchesConfiguredShortcut\(data, resolvedShortcuts\.cutEditor\)/);
   assert.match(source, /matchesConfiguredShortcut\(data, bashModeSettings\.toggleShortcut\)/);
+  assert.match(source, /const powerlineShortcutAction = getPowerlineShortcutAction\(data\)/);
   assert.match(source, /runPowerlineShortcut\(ctx, powerlineShortcutAction\)/);
+  assert.doesNotMatch(source, /function registerPowerlineShortcut\(/);
+  assert.doesNotMatch(source, /pi\.registerShortcut\(resolvedShortcuts\./);
+  assert.doesNotMatch(source, /pi\.registerShortcut\(bashModeSettings\.toggleShortcut/);
 });
 
 test("powerline editor preserves a previous editor autocomplete provider", () => {
   assert.match(source, /const previousEditorFactory = typeof ctx\.ui\.getEditorComponent === "function" \? ctx\.ui\.getEditorComponent\(\) : undefined/);
   assert.match(source, /const previousEditor = previousEditorFactory\?\.\(tui, editorTheme, keybindings\)/);
-  assert.match(source, /return getEditorAutocompleteProvider\(editor\) \?\? getEditorAutocompleteProvider\(previousEditor\)/);
+  assert.match(source, /passAutocompleteProviderThroughPreviousEditor\(provider, previousEditor\)/);
+  assert.match(source, /new ModeAwareAutocompleteProvider\(defaultProvider, bashProvider, oneOffBashProvider/);
 });

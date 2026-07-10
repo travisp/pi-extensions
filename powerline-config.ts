@@ -18,6 +18,8 @@ export interface PowerlineConfig {
   segmentOptions: StatusLineSegmentOptions;
   mouseScroll: boolean;
   fixedEditor: boolean;
+  welcome: boolean;
+  stashSharpSShortcut: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -157,6 +159,7 @@ function normalizeSegmentOptions(raw: Record<string, unknown>): StatusLineSegmen
   if (isRecord(raw.model)) {
     options.model = {
       ...(typeof raw.model.showThinkingLevel === "boolean" ? { showThinkingLevel: raw.model.showThinkingLevel } : {}),
+      ...(raw.model.display === "name" || raw.model.display === "qualified" ? { display: raw.model.display } : {}),
     };
   }
 
@@ -186,6 +189,16 @@ function normalizeSegmentOptions(raw: Record<string, unknown>): StatusLineSegmen
     };
   }
 
+  if (isRecord(raw.cost)) {
+    options.cost = {
+      ...(raw.cost.subscriptionDisplay === "subscription"
+        || raw.cost.subscriptionDisplay === "reported-cost"
+        || raw.cost.subscriptionDisplay === "both"
+        ? { subscriptionDisplay: raw.cost.subscriptionDisplay }
+        : {}),
+    };
+  }
+
   return options;
 }
 
@@ -200,6 +213,7 @@ export function mergeSegmentOptions(
     path: { ...defaults.path, ...overrides.path },
     git: { ...defaults.git, ...overrides.git },
     time: { ...defaults.time, ...overrides.time },
+    cost: { ...defaults.cost, ...overrides.cost },
   };
 }
 
@@ -211,6 +225,8 @@ export function parsePowerlineConfig(value: unknown, presets: readonly StatusLin
     segmentOptions: {},
     mouseScroll: true,
     fixedEditor: true,
+    welcome: true,
+    stashSharpSShortcut: false,
   };
 
   const directPreset = normalizePreset(value, presets);
@@ -225,6 +241,8 @@ export function parsePowerlineConfig(value: unknown, presets: readonly StatusLin
     segmentOptions: normalizeSegmentOptions(value),
     mouseScroll: value.mouseScroll !== false,
     fixedEditor: value.fixedEditor !== false,
+    welcome: value.welcome !== false,
+    stashSharpSShortcut: value.stashSharpSShortcut === true,
   };
 }
 
@@ -270,7 +288,7 @@ export function nextPowerlineSettingWithPreset(existingPowerlineSetting: unknown
 
 export function nextPowerlineSettingWithOptions(
   existingPowerlineSetting: unknown,
-  updates: Partial<Pick<PowerlineConfig, "mouseScroll" | "fixedEditor">>,
+  updates: Partial<Pick<PowerlineConfig, "mouseScroll" | "fixedEditor" | "welcome" | "stashSharpSShortcut">>,
   currentPreset: StatusLinePreset,
 ): unknown {
   if (!isRecord(existingPowerlineSetting)) {

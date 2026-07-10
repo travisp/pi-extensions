@@ -2,13 +2,36 @@
 // AI-generated contextual working messages that match a user's preferred theme/vibe.
 // Uses module-level state (matching powerline-footer pattern).
 
-import { complete, type Context } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context, Model, ProviderStreamOptions } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { homedir } from "node:os";
+import { getAgentPath } from "./paths.ts";
 
 type VibeMode = "generate" | "file";
+type CompleteFunction = (model: Model<string>, context: Context, options?: ProviderStreamOptions) => Promise<AssistantMessage>;
+
+let completeFunctionPromise: Promise<CompleteFunction> | null = null;
+
+async function getCompleteFunction(): Promise<CompleteFunction> {
+  completeFunctionPromise ??= (async () => {
+    const piAi = await import("@earendil-works/pi-ai");
+    const complete = Reflect.get(piAi, "complete");
+    if (typeof complete === "function") {
+      return complete as CompleteFunction;
+    }
+
+    const compat = await import("@earendil-works/pi-ai/compat");
+    const compatComplete = Reflect.get(compat, "complete");
+    if (typeof compatComplete !== "function") {
+      throw new Error("pi-ai complete API is unavailable");
+    }
+
+    return compatComplete as CompleteFunction;
+  })();
+
+  return completeFunctionPromise;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Constants
@@ -77,8 +100,7 @@ let recentVibes: string[] = [];
 // ═══════════════════════════════════════════════════════════════════════════
 
 function getSettingsPath(): string {
-  const homeDir = process.env.HOME || process.env.USERPROFILE || homedir();
-  return join(homeDir, ".pi", "agent", "settings.json");
+  return getAgentPath("settings.json");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -208,8 +230,7 @@ function saveModelConfig(): boolean {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function getVibesDir(): string {
-  const homeDir = process.env.HOME || process.env.USERPROFILE || homedir();
-  return join(homeDir, ".pi", "agent", "vibes");
+  return getAgentPath("vibes");
 }
 
 function toVibeFileSlug(theme: string): string {
@@ -402,7 +423,7 @@ async function generateVibe(
   }
   
   const aiContext = buildAiContext(buildVibePrompt(ctx));
-  
+  const complete = await getCompleteFunction();
   const response = await complete(model, aiContext, { apiKey: auth.apiKey, headers: auth.headers, signal });
 
   const textContent = response.content.find(c => c.type === "text");
@@ -648,6 +669,7 @@ export async function generateVibesBatch(
   try {
     // Use longer timeout for batch generation (30 seconds)
     const signal = AbortSignal.timeout(30000);
+    const complete = await getCompleteFunction();
     const response = await complete(model, aiContext, { apiKey: auth.apiKey, headers: auth.headers, signal });
     
     const textContent = response.content.find(c => c.type === "text");
