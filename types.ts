@@ -46,6 +46,7 @@ export type BuiltinStatusLineSegmentId =
   | "cache_read"
   | "cache_write"
   | "cache_hit"
+  | "last_response"
   | "thinking"
   | "extension_statuses";
 
@@ -176,6 +177,7 @@ export interface SegmentContext {
   customCompactionEnabled: boolean;
   usingSubscription: boolean;
   sessionStartTime: number;
+  lastResponseEndedAt?: number;
   shellModeActive: boolean;
   shellRunning: boolean;
   shellName: string | null;

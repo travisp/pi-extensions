@@ -370,7 +370,7 @@ Use `"off"` to disable extension-owned git polling entirely and only show the br
 
 ## Segments
 
-`model` · `thinking` · `shell_mode` · `path` · `git` · `subagents` · `token_in` · `token_out` · `token_total` · `cost` · `context_pct` · `context_total` · `time_spent` · `time` · `session` · `hostname` · `cache_read` · `cache_write` · `cache_hit`
+`model` · `thinking` · `shell_mode` · `path` · `git` · `subagents` · `token_in` · `token_out` · `token_total` · `cost` · `context_pct` · `context_total` · `time_spent` · `time` · `last_response` · `session` · `hostname` · `cache_read` · `cache_write` · `cache_hit`
 
 ## Separators
 

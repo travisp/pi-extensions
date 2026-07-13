@@ -2,6 +2,7 @@ import {
   copyToClipboard,
   type ExtensionAPI,
   type ReadonlyFooterDataProvider,
+  type SessionEntry,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -278,6 +279,17 @@ function isSessionAssistantMessage(value: unknown): value is AssistantMessage {
     && value.role === "assistant"
     && hasSessionAssistantUsage(value.usage)
     && (value.stopReason === undefined || typeof value.stopReason === "string");
+}
+
+export function findLastResponseEndedAt(entries: readonly SessionEntry[]): number | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+    if (entry.message.stopReason === "error" || entry.message.stopReason === "aborted") continue;
+    return Date.parse(entry.timestamp);
+  }
+
+  return undefined;
 }
 
 function isPromptHistoryState(value: unknown): value is PromptHistoryState {
@@ -1062,6 +1074,8 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   let getThinkingLevelFn: (() => string) | null = null;
   let currentThinkingLevel: string | null = null;
   let liveAssistantUsage: SessionAssistantUsage | null = null;
+  let lastResponseEndedAt: number | undefined;
+  let lastResponseRefreshInterval: ReturnType<typeof setInterval> | null = null;
   let isStreaming = false;
   let tuiRef: any = null;
   let restoreFooterStatusRepaintHook: (() => void) | null = null;
@@ -1130,6 +1144,18 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     forceNextLayoutRecompute = true;
     statusRenderScheduler.cancel();
     statusRenderScheduler.schedule(0);
+  };
+
+  const stopLastResponseRefresh = () => {
+    if (!lastResponseRefreshInterval) return;
+    clearInterval(lastResponseRefreshInterval);
+    lastResponseRefreshInterval = null;
+  };
+
+  const restartLastResponseRefresh = () => {
+    stopLastResponseRefresh();
+    if (lastResponseEndedAt === undefined || !tuiRef) return;
+    lastResponseRefreshInterval = setInterval(requestStatusRender, 60_000);
   };
 
   const installFooterStatusRepaintHook = (footerData: ReadonlyFooterDataProvider) => {
@@ -1318,6 +1344,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     bashModeSettings = parseBashModeSettings(settings, resolvedShortcuts);
     showLastPrompt = settings.showLastPrompt !== false;
     config = parsePowerlineConfig(settings.powerline, PRESET_NAMES);
+    lastResponseEndedAt = findLastResponseEndedAt(ctx.sessionManager.getBranch());
     stashedPromptHistory = readPersistedStashHistory();
     bashModeActive = false;
     bashTranscript = new BashTranscriptStore(bashModeSettings);
@@ -1348,6 +1375,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       }
     }
 
+    restartLastResponseRefresh();
   });
 
   pi.on("session_shutdown", async (event) => {
@@ -1364,6 +1392,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     welcomeOverlayShouldDismiss = false;
     welcomeDismissScheduler.cancel();
     statusRenderScheduler.cancel();
+    stopLastResponseRefresh();
     restoreFooterStatusRepaintHook?.();
     restoreFooterStatusRepaintHook = null;
     const hadFixedEditorCompositor = teardownFixedEditorCompositor(isTerminalExit ? { resetExtendedKeyboardModes: true } : undefined);
@@ -1388,6 +1417,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     getThinkingLevelFn = null;
     currentThinkingLevel = null;
     liveAssistantUsage = null;
+    lastResponseEndedAt = undefined;
     tuiRef = null;
     currentEditor = null;
     resetLayoutCache();
@@ -1450,6 +1480,8 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     currentCtx = ctx;
     currentThinkingLevel = null;
     liveAssistantUsage = null;
+    lastResponseEndedAt = findLastResponseEndedAt(ctx.sessionManager.getBranch());
+    restartLastResponseRefresh();
     requestImmediateStatusRender({ deferDuringTyping: false });
   });
 
@@ -1488,8 +1520,12 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     if (isSessionAssistantMessage(event.message)) {
       if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
         liveAssistantUsage = null;
-      } else if (getUsageTokenTotal(event.message.usage) > 0) {
-        liveAssistantUsage = event.message.usage;
+      } else {
+        lastResponseEndedAt = Date.now();
+        restartLastResponseRefresh();
+        if (getUsageTokenTotal(event.message.usage) > 0) {
+          liveAssistantUsage = event.message.usage;
+        }
       }
     }
     requestImmediateStatusRender({ deferDuringTyping: false });
@@ -1845,6 +1881,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
         enabled = !enabled;
         if (enabled) {
           setupCustomEditor(ctx);
+          restartLastResponseRefresh();
           ctx.ui.notify("Powerline enabled", "info");
         } else {
           shellSession?.dispose();
@@ -1877,6 +1914,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
           tuiRef = null;
           currentEditor = null;
           statusRenderScheduler.cancel();
+          stopLastResponseRefresh();
           resetLayoutCache();
           ctx.ui.notify("Powerline disabled", "info");
         }
@@ -2191,6 +2229,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       customCompactionEnabled: customCompactionEnabled || extensionStatuses.has(CUSTOM_COMPACTION_STATUS_KEY),
       usingSubscription,
       sessionStartTime,
+      lastResponseEndedAt,
       shellModeActive: bashModeActive,
       shellRunning: shellSession?.state.running ?? false,
       shellName: shellSession?.state.shellName ?? null,

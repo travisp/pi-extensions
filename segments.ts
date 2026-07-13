@@ -36,6 +36,35 @@ function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
+function formatRelativeAge(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h${minutes % 60}m`;
+
+  const days = Math.floor(hours / 24);
+  return `${days}d${hours % 24}h`;
+}
+
+function formatClock(timestamp: number, opts: { format?: "12h" | "24h"; showSeconds?: boolean }): string {
+  const date = new Date(timestamp);
+  let hours = date.getHours();
+  let suffix = "";
+
+  if (opts.format === "12h") {
+    suffix = hours >= 12 ? "pm" : "am";
+    hours = hours % 12 || 12;
+  }
+
+  const mins = date.getMinutes().toString().padStart(2, "0");
+  const seconds = opts.showSeconds ? `:${date.getSeconds().toString().padStart(2, "0")}` : "";
+  return `${hours}:${mins}${seconds}${suffix}`;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Segment Implementations
 // ═══════════════════════════════════════════════════════════════════════════
@@ -360,21 +389,7 @@ const timeSegment: StatusLineSegment = {
   render(ctx) {
     const icons = getIcons();
     const opts = ctx.options.time ?? {};
-    const now = new Date();
-
-    let hours = now.getHours();
-    let suffix = "";
-    if (opts.format === "12h") {
-      suffix = hours >= 12 ? "pm" : "am";
-      hours = hours % 12 || 12;
-    }
-
-    const mins = now.getMinutes().toString().padStart(2, "0");
-    let timeStr = `${hours}:${mins}`;
-    if (opts.showSeconds) {
-      timeStr += `:${now.getSeconds().toString().padStart(2, "0")}`;
-    }
-    timeStr += suffix;
+    const timeStr = formatClock(Date.now(), opts);
 
     return { content: withIcon(icons.time, timeStr), visible: true };
   },
@@ -438,6 +453,21 @@ const cacheHitSegment: StatusLineSegment = {
   },
 };
 
+const lastResponseSegment: StatusLineSegment = {
+  id: "last_response",
+  render(ctx) {
+    const endedAt = ctx.lastResponseEndedAt;
+    if (endedAt === undefined) {
+      return { content: "", visible: false };
+    }
+
+    const icons = getIcons();
+    const clock = formatClock(endedAt, { format: ctx.options.time?.format });
+    const age = formatRelativeAge(Date.now() - endedAt);
+    return { content: withIcon(icons.time, `${clock}${SEP_DOT}${age} ago`), visible: true };
+  },
+};
+
 const extensionStatusesSegment: StatusLineSegment = {
   id: "extension_statuses",
   render(ctx) {
@@ -489,6 +519,7 @@ export const SEGMENTS: Record<BuiltinStatusLineSegmentId, StatusLineSegment> = {
   cache_read: cacheReadSegment,
   cache_write: cacheWriteSegment,
   cache_hit: cacheHitSegment,
+  last_response: lastResponseSegment,
   extension_statuses: extensionStatusesSegment,
 };
 
