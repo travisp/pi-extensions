@@ -18,6 +18,7 @@ function createSegmentContext(thinkingLevel: string, colors: ColorScheme): Segme
     sessionId: undefined,
     usageStats: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
     contextPercent: 0,
+    contextPercentStale: false,
     contextWindow: 0,
     autoCompactEnabled: true,
     customCompactionEnabled: false,

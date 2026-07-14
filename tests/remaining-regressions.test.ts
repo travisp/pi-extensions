@@ -34,6 +34,7 @@ function createSegmentContext(overrides: Partial<SegmentContext> = {}): SegmentC
     cwd: "/tmp/project",
     usageStats: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
     contextPercent: 0,
+    contextPercentStale: false,
     contextWindow: 0,
     autoCompactEnabled: true,
     customCompactionEnabled: false,
@@ -99,6 +100,23 @@ test("cost segment supports subscription display modes", () => {
   assert.deepEqual(both, { content: "$0.42 (sub)", visible: true });
   assert.deepEqual(zeroReported, { content: "(sub)", visible: true });
   assert.deepEqual(zeroBoth, { content: "(sub)", visible: true });
+});
+
+test("context segment marks the last known post-compaction percentage as stale", () => {
+  const stale = renderSegment("context_pct", createSegmentContext({
+    contextPercent: 63.2,
+    contextPercentStale: true,
+    contextWindow: 272_000,
+    autoCompactEnabled: false,
+  }));
+  const fresh = renderSegment("context_pct", createSegmentContext({
+    contextPercent: 18.4,
+    contextWindow: 272_000,
+    autoCompactEnabled: false,
+  }));
+
+  assert.equal(stripAnsi(stale.content), "◫ 63.2%?/272k");
+  assert.equal(stripAnsi(fresh.content), "◫ 18.4%/272k");
 });
 
 test("Nerd Font context icon uses stable database glyph", () => {

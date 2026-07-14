@@ -43,7 +43,6 @@ import { WelcomeComponent, WelcomeHeader, discoverLoadedCounts, getRecentSession
 import { createWelcomeDismissScheduler } from "./welcome-dismiss.ts";
 import { createRenderScheduler } from "./render-scheduler.ts";
 import { getEditorAutocompleteProvider, passAutocompleteProviderThroughPreviousEditor } from "./editor-composition.ts";
-import { readCoreContextUsage } from "./context-usage.ts";
 import { isStaleExtensionContextError, shouldResetExtendedKeyboardModesOnShutdown, shouldRestoreInlineEditorCursorOnShutdown, shouldShowStartupWelcome } from "./lifecycle.ts";
 import { renderFixedEditorCluster } from "./fixed-editor/cluster.ts";
 import { DEFAULT_SCROLL_REPAINT_THROTTLE_MS, emergencyTerminalModeReset, TerminalSplitCompositor } from "./fixed-editor/terminal-split.ts";
@@ -2196,10 +2195,13 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       : false;
     const hasPromptCacheActivity = cacheRead > 0 || cacheWrite > 0 || latestUsageHasPromptCacheActivity;
     const latestPromptCacheHitRate = latestUsage && hasPromptCacheActivity ? getPromptCacheHitRate(latestUsage) : undefined;
-    const coreContextUsage = isStreaming && liveAssistantUsage ? null : readCoreContextUsage(ctx);
-    const contextTokens = coreContextUsage?.contextTokens ?? (latestUsage ? getUsageTokenTotal(latestUsage) : 0);
+    const coreContextUsage = isStreaming && liveAssistantUsage ? undefined : ctx.getContextUsage();
+    // Pi returns null usage immediately after compaction. Keep the previous
+    // assistant percentage visible, but mark it stale until fresh usage arrives.
+    const contextPercentStale = coreContextUsage?.percent === null;
+    const contextTokens = coreContextUsage?.tokens ?? (latestUsage ? getUsageTokenTotal(latestUsage) : 0);
     const contextWindow = coreContextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
-    const contextPercent = coreContextUsage?.contextPercent ?? (contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0);
+    const contextPercent = coreContextUsage?.percent ?? (contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0);
 
     const segmentOptions = mergeSegmentOptions(presetDef.segmentOptions, config.segmentOptions);
 
@@ -2224,6 +2226,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
       cwd: ctx.cwd,
       usageStats: { input, output, cacheRead, cacheWrite, latestPromptCacheHitRate, cost },
       contextPercent,
+      contextPercentStale,
       contextWindow,
       autoCompactEnabled: ctx.settingsManager?.getCompactionSettings?.()?.enabled ?? true,
       customCompactionEnabled: customCompactionEnabled || extensionStatuses.has(CUSTOM_COMPACTION_STATUS_KEY),
