@@ -13,6 +13,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { decodeKittyPrintable, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	type BashOperations,
 	createBashToolDefinition,
@@ -404,7 +405,7 @@ class SshShellTransport {
 			pending.timer = setTimeout(() => {
 				this.pending = null;
 				void this.close();
-				reject(new Error(`command timeout after ${timeoutMs}ms; SSH transport was restarted`));
+				reject(new Error(`command timeout after ${timeoutMs}ms; SSH transport was closed`));
 			}, timeoutMs);
 
 			const finish = (result: RunResult) => {
@@ -433,7 +434,7 @@ class SshShellTransport {
 		}
 		pending.outputBytes += data.length;
 		if (pending.outputBytes > pending.maxOutputBytes) {
-			const error = new Error(`remote command output exceeded ${pending.maxOutputBytes} bytes; SSH transport was restarted`);
+			const error = new Error(`remote command output exceeded ${pending.maxOutputBytes} bytes; SSH transport was closed`);
 			this.pending = null;
 			void this.close();
 			pending.reject(error);
@@ -523,6 +524,7 @@ class ElevationManager {
 
 	async approve(ctx: ExtensionCommandContext | ExtensionContext, responseScopeDescription = "this agent response"): Promise<SshShellTransport> {
 		if (this.isActive() && this.transport) return this.transport;
+		await this.revoke();
 
 		const responseOption = `Just for ${responseScopeDescription}`;
 		const choice = await ctx.ui.select("Approve elevated remote session?", [responseOption, "Persistent until revoked", "No"]);
@@ -725,18 +727,22 @@ function createRemoteBashOps(context: RemoteContext): BashOperations {
 }
 
 function renderPasswordDialog(title: string, prompt: string, passwordLength: number, width: number): string[] {
-	const innerWidth = Math.max(20, width - 2);
-	const inputWidth = Math.max(12, Math.min(innerWidth - 4, 60));
-	const masked = "•".repeat(passwordLength).slice(-inputWidth).padEnd(inputWidth, " ");
-	const line = (text: string) => `│ ${text.slice(0, innerWidth - 2).padEnd(innerWidth - 2, " ")} │`;
-	const promptLines = prompt.split(/\r?\n/).map((part) => part.trim()).filter(Boolean).slice(0, 3);
+	const contentWidth = width - 4;
+	const maskWidth = contentWidth - 2;
+	const fit = (text: string) => {
+		const fitted = truncateToWidth(text, contentWidth, "");
+		return fitted + " ".repeat(contentWidth - visibleWidth(fitted));
+	};
+	const line = (text: string) => `│ ${fit(text)} │`;
+	const masked = "•".repeat(passwordLength).slice(-maskWidth).padEnd(maskWidth, " ");
+
 	return [
-		`╭${"─".repeat(innerWidth)}╮`,
+		`╭${"─".repeat(width - 2)}╮`,
 		line(title),
-		...(promptLines.length ? promptLines.map(line) : [line("")]),
+		...prompt.split(/\r?\n/).map((part) => line(part.trim())),
 		line(`[${masked}]`),
-		line("Enter to submit · Esc to cancel"),
-		`╰${"─".repeat(innerWidth)}╯`,
+		line(contentWidth < 30 ? "↵ submit · Esc cancel" : "Enter to submit · Esc to cancel"),
+		`╰${"─".repeat(width - 2)}╯`,
 	];
 }
 
@@ -876,63 +882,37 @@ async function promptMaskedPassword(ctx: ExtensionCommandContext | ExtensionCont
 		ctx.ui.custom<string | undefined>(
 		(tui, _theme, keybindings, done) => {
 			let password = "";
-			let pasteBuffer = "";
-			let inPaste = false;
-			let closed = false;
 
 			const close = (value: string | undefined) => {
-				if (closed) return;
-				closed = true;
 				password = "";
 				done(value);
 			};
-
-			const appendPrintable = (text: string) => {
-				const printable = stripControlChars(text);
-				if (!printable) return;
-				password += printable;
+			const append = (text: string) => {
+				password += stripControlChars(text);
 				tui.requestRender();
-			};
-
-			const consumePaste = (data: string): string | undefined => {
-				if (data.includes(PASSWORD_PASTE_START)) {
-					inPaste = true;
-					pasteBuffer = "";
-					data = data.slice(data.indexOf(PASSWORD_PASTE_START) + PASSWORD_PASTE_START.length);
-				}
-				if (!inPaste) return data;
-
-				pasteBuffer += data;
-				const end = pasteBuffer.indexOf(PASSWORD_PASTE_END);
-				if (end === -1) return undefined;
-
-				const pasted = pasteBuffer.slice(0, end);
-				pasteBuffer = "";
-				inPaste = false;
-				return pasted;
 			};
 
 			return {
 				render: (width: number) => renderPasswordDialog(title, prompt, password.length, width),
 				handleInput(data: string): void {
+					if (data.startsWith(PASSWORD_PASTE_START) && data.endsWith(PASSWORD_PASTE_END)) {
+						append(data.slice(PASSWORD_PASTE_START.length, -PASSWORD_PASTE_END.length));
+						return;
+					}
 					if (keybindings.matches(data, "tui.select.cancel") || data === "\x03") return close(undefined);
-					if (keybindings.matches(data, "tui.input.submit") || data === "\r" || data === "\n") return close(password);
-
-					const text = consumePaste(data);
-					if (text === undefined) return;
-
-					// Ignore terminal escape sequences such as mouse clicks, focus events,
-					// and cursor keys. Without this, SGR mouse reports like ESC [ < ... M
-					// can become literal password text.
-					if (text.includes("\x1b")) return;
-
-					if (keybindings.matches(text, "tui.editor.deleteCharBackward") || text === "\x7f" || text === "\b") {
+					if (keybindings.matches(data, "tui.input.submit")) return close(password);
+					if (keybindings.matches(data, "tui.editor.deleteCharBackward")) {
 						password = password.slice(0, -1);
 						tui.requestRender();
 						return;
 					}
 
-					appendPrintable(text);
+					const kittyPrintable = decodeKittyPrintable(data);
+					if (kittyPrintable !== undefined) return append(kittyPrintable);
+
+					// Ignore non-printing terminal sequences such as mouse and cursor input.
+					if (data.includes("\x1b")) return;
+					append(data);
 				},
 				invalidate() {},
 			};
@@ -1041,8 +1021,6 @@ export default function (pi: ExtensionAPI) {
 	const localEdit = createEditToolDefinition(localCwd);
 	const localBash = createBashToolDefinition(localCwd);
 	let remoteState: RemoteState | null = null;
-	let toolsRegistered = false;
-	let commandsRegistered = false;
 
 	const requireRemote = (): RemoteState => {
 		if (!remoteState) throw new Error("pi-remote-ssh-admin is not active; pass --ssh");
@@ -1056,6 +1034,14 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setStatus("remote-admin", `🌐 ${displayHost}:${config.cwd}${elevated}`);
 	};
 
+	const runAndRefreshStatus = async <T>(ctx: ExtensionContext, operation: () => Promise<T>): Promise<T> => {
+		try {
+			return await operation();
+		} finally {
+			setStatus(ctx);
+		}
+	};
+
 	const warnIfRtkExtensionLoaded = (ctx: ExtensionContext) => {
 		if (!pi.getCommands().some((command) => command.name === "rtk")) return;
 		ctx.ui.notify("pi-rtk-optimizer is loaded. If command rewrite mode is enabled, rewritten bash commands may fail on the remote host unless rtk is installed there; use /rtk to switch pi-rtk-optimizer to suggest mode.", "error");
@@ -1064,47 +1050,32 @@ export default function (pi: ExtensionAPI) {
 	const remoteToolName = (name: string) => (remoteState?.elevation.isActive() ? `root ${name}` : name);
 
 	const registerTools = () => {
-		if (toolsRegistered) return;
-		toolsRegistered = true;
-
 		pi.registerTool({
 			...localRead,
 			renderCall: renderCallWithToolName(localRead, () => remoteToolName("read")),
-			async execute(id, params, signal, onUpdate, ctx) {
-				const result = await requireRemote().readTool.execute(id, params, signal, onUpdate, ctx);
-				setStatus(ctx);
-				return result;
-			},
+			execute: (id, params, signal, onUpdate, ctx) =>
+				runAndRefreshStatus(ctx, () => requireRemote().readTool.execute(id, params, signal, onUpdate, ctx)),
 		});
 
 		pi.registerTool({
 			...localWrite,
 			renderCall: renderCallWithToolName(localWrite, () => remoteToolName("write")),
-			async execute(id, params, signal, onUpdate, ctx) {
-				const result = await requireRemote().writeTool.execute(id, params, signal, onUpdate, ctx);
-				setStatus(ctx);
-				return result;
-			},
+			execute: (id, params, signal, onUpdate, ctx) =>
+				runAndRefreshStatus(ctx, () => requireRemote().writeTool.execute(id, params, signal, onUpdate, ctx)),
 		});
 
 		pi.registerTool({
 			...localEdit,
 			renderCall: renderCallWithToolName(localEdit, () => remoteToolName("edit")),
-			async execute(id, params, signal, onUpdate, ctx) {
-				const result = await requireRemote().editTool.execute(id, params, signal, onUpdate, ctx);
-				setStatus(ctx);
-				return result;
-			},
+			execute: (id, params, signal, onUpdate, ctx) =>
+				runAndRefreshStatus(ctx, () => requireRemote().editTool.execute(id, params, signal, onUpdate, ctx)),
 		});
 
 		pi.registerTool({
 			...localBash,
 			renderCall: renderCallWithToolName(localBash, () => remoteToolName("bash")),
-			async execute(id, params, signal, onUpdate, ctx) {
-				const result = await requireRemote().bashTool.execute(id, params, signal, onUpdate, ctx);
-				setStatus(ctx);
-				return result;
-			},
+			execute: (id, params, signal, onUpdate, ctx) =>
+				runAndRefreshStatus(ctx, () => requireRemote().bashTool.execute(id, params, signal, onUpdate, ctx)),
 		});
 
 		pi.registerTool({
@@ -1155,31 +1126,31 @@ export default function (pi: ExtensionAPI) {
 			parameters: EMPTY_TOOL_PARAMETERS,
 			async execute(_id, _params, _signal, _onUpdate, ctx) {
 				const state = requireRemote();
-				await state.elevation.approve(ctx);
-				setStatus(ctx);
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Elevated remote session active for ${state.elevation.describe()}. Default remote tools now use the root transport until the approved scope ends or it is revoked.`,
-						},
-					],
-				};
+				return runAndRefreshStatus(ctx, async () => {
+					await state.elevation.approve(ctx);
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Elevated remote session active for ${state.elevation.describe()}. Default remote tools now use the root transport until the approved scope ends or it is revoked.`,
+							},
+						],
+					};
+				});
 			},
 		});
 	};
 
 	const registerCommands = () => {
-		if (commandsRegistered) return;
-		commandsRegistered = true;
 		pi.registerCommand("remote-admin-elevate", {
 			description: "Approve an elevated root SSH session for remote-admin",
 			handler: async (_args, ctx) => {
 				const state = requireRemote();
 				await ctx.waitForIdle();
-				await state.elevation.approve(ctx, "next agent response");
-				setStatus(ctx);
-				ctx.ui.notify(`Elevated remote session active for ${state.elevation.describe()}`, "info");
+				await runAndRefreshStatus(ctx, async () => {
+					await state.elevation.approve(ctx, "next agent response");
+					ctx.ui.notify(`Elevated remote session active for ${state.elevation.describe()}`, "info");
+				});
 			},
 		});
 		pi.registerCommand("remote-admin-revoke", {
@@ -1211,8 +1182,6 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(`Remote admin failed: ${message}`, "warning");
 		}
 	});
-
-	pi.on("session_switch", (_event, ctx) => setStatus(ctx));
 
 	pi.on("agent_end", async () => {
 		await remoteState?.elevation.revokeAgentResponse();

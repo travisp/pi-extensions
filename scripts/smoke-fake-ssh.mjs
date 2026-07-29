@@ -16,6 +16,7 @@ const piCodingAgentRoot = getPiCodingAgentRoot();
 const importPiInternal = (relativePath) => import(pathToFileURL(join(piCodingAgentRoot, relativePath)).href);
 const { discoverAndLoadExtensions } = await importPiInternal('dist/core/extensions/loader.js');
 const { ExtensionRunner } = await importPiInternal('dist/core/extensions/runner.js');
+const { visibleWidth } = await import('@earendil-works/pi-tui');
 
 const tmp = mkdtempSync(join(tmpdir(), 'pi-remote-ssh-admin-smoke-'));
 const remoteCwd = join(tmp, 'remote');
@@ -87,12 +88,12 @@ process.env.PI_FAKE_SSH_COUNT = countFile;
 process.env.PI_FAKE_SSH_REQUIRE_PASSWORD = '1';
 process.env.PI_FAKE_SSH_PASSWORD = 'opensesame';
 
-function makeUi({ password } = {}) {
+function makeUi(password) {
   const keybindings = {
     matches: (data, action) => {
-      if (action === 'tui.input.submit') return data === '\r' || data === '\n';
-      if (action === 'tui.select.cancel') return data === '\x1b';
-      if (action === 'tui.editor.deleteCharBackward') return data === '\x7f' || data === '\b';
+      if (action === 'tui.input.submit') return data === '\x1b[13u';
+      if (action === 'tui.select.cancel') return data === '\x1b[27u';
+      if (action === 'tui.editor.deleteCharBackward') return data === '\x1b[127u';
       return false;
     },
   };
@@ -112,11 +113,13 @@ function makeUi({ password } = {}) {
     setHeader: () => {},
     setTitle: () => {},
     custom: async (factory) => {
-      if (password === undefined) return undefined;
       let result;
       const component = factory({ requestRender: () => {} }, {}, keybindings, (value) => { result = value; });
-      for (const char of password) component.handleInput?.(char);
-      component.handleInput?.('\r');
+      for (const char of password) component.handleInput?.(`\x1b[${char.codePointAt(0)}u`);
+      for (const line of component.render(16)) {
+        if (visibleWidth(line) > 16) throw new Error('custom UI line exceeds 16 columns');
+      }
+      component.handleInput?.('\x1b[13u');
       return result;
     },
     pasteToEditor: () => {},
@@ -141,7 +144,7 @@ try {
   result.runtime.flagValues.set('use-password', true);
   const ext = result.extensions.find((e) => e.path.includes('remote-admin'));
   const runner = new ExtensionRunner([ext], result.runtime, process.cwd(), { getSessionFile: () => undefined }, { getApiKeyAndHeaders: async () => ({ ok: false }) });
-  const ui = makeUi({ password: 'opensesame' });
+  const ui = makeUi('opensesame');
   const ctx = { ui, hasUI: true };
 
   runner.bindCore(
