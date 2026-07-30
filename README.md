@@ -4,7 +4,7 @@ Small pi extensions that I use that don't deserve their own git repository.
 
 Each extension is kept in its own directory with its own `package.json` and can be installed individually.
 
-Some of these are more developed than others. Extensions published to the npm registry are marked **npm** below and are ready for others to use.
+Some of these are more developed than others. Extensions published to the npm registry are marked **npm** below and are ready for others to use. Otherwise they are all work in progress experiments.
 
 ## Extensions
 
