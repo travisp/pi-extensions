@@ -39,7 +39,7 @@ export default function autoSessionName(pi: ExtensionAPI): void {
 			const name = await generateName(prompt, ctx.modelRegistry);
 			if (name) {
 				pi.setSessionName(name);
-				ctx.ui.notify(`Session Auto-Named: ${name}`, "info");
+				ctx.ui.notify(`✨ SESSION AUTO-NAMED ✨\n${name}`, "warning");
 			}
 		} catch (error) {
 			console.error("[pi-auto-session-name] Failed to generate session name:", error);

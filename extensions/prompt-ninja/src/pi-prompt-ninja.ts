@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
 	formatSkillsForPrompt,
 	getAgentDir,
@@ -8,29 +8,26 @@ import {
 	type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { getKeybindings, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
-
-type SettingsScope = "session" | "directory" | "global";
-type CellState = "unset" | "on" | "off";
-
-type PromptSectionName = "intro" | "tools" | "guidelines" | "piDocumentation" | "appendSection" | "projectContext" | "skills" | "runtimeContext";
-
-type SectionSettings = Record<PromptSectionName, boolean>;
-
-type SkillSettings = {
-	/** Explicit default for all configurable skills in this scope. */
-	default?: boolean;
-	/** Per-skill explicit enables. */
-	allow?: string[];
-	/** Per-skill explicit disables. */
-	deny?: string[];
-};
-
-type PromptSectionsConfig = {
-	sections?: Partial<SectionSettings>;
-	skills?: SkillSettings;
-};
-
-type ScopedConfigs = Record<SettingsScope, PromptSectionsConfig>;
+import {
+	allSkillsCell,
+	configColumnForScope,
+	configForScope,
+	EDITABLE_SCOPES,
+	loadConfigColumns,
+	sectionCell,
+	setAllSkillsCell,
+	setSectionCell,
+	setSkillCell,
+	skillCell,
+	writeScopedConfig,
+	type CellState,
+	type ConfigColumn,
+	type PromptSectionName,
+	type PromptSectionsConfig,
+	type SectionSettings,
+	type SettingsScope,
+	type SkillSettings,
+} from "./prompt-config.js";
 
 type MatrixRow = {
 	id: string;
@@ -40,8 +37,8 @@ type MatrixRow = {
 	previewLines?: (width: number) => string[];
 	previewLineLimit?: number;
 	effective: () => string;
-	cell?: (scope: SettingsScope) => CellState;
-	cellText?: (scope: SettingsScope) => string;
+	cell?: (column: ConfigColumn) => CellState;
+	cellText?: (column: ConfigColumn) => string;
 	setCell?: (scope: SettingsScope, state: CellState) => void;
 	open?: (done: () => void) => Component;
 };
@@ -54,6 +51,7 @@ type Theme = {
 type MatrixOptions = {
 	title: string;
 	theme: Theme;
+	columns: ConfigColumn[];
 	done: () => void;
 	reset: () => void;
 	search?: boolean;
@@ -92,10 +90,9 @@ const DEFAULT_SECTIONS: SectionSettings = {
 	runtimeContext: true,
 };
 
-const CONFIG_FILE_NAME = "prompt-sections.json";
 const APPEND_SYSTEM_FILE_NAME = "APPEND_SYSTEM.md";
 const SESSION_SETTINGS_ENTRY_TYPE = "prompt-sections-settings";
-const SCOPES: SettingsScope[] = ["session", "directory", "global"];
+
 const SETTING_COLUMN_WIDTH = 30;
 const EFFECTIVE_COLUMN_WIDTH = 14;
 const SCOPE_COLUMN_WIDTH = 14;
@@ -125,9 +122,9 @@ export default function promptSections(pi: ExtensionAPI) {
 		latestAppendSystemPrompt = event.systemPromptOptions.appendSystemPrompt;
 		latestAppendScope = detectAppendScope(event.systemPromptOptions.cwd, latestAppendSystemPrompt);
 
-		const configs = loadScopedConfigs(event.systemPromptOptions.cwd);
+		const columns = loadConfigColumns(event.systemPromptOptions.cwd, sessionConfig);
 		const skills = event.systemPromptOptions.skills ?? [];
-		const nextSystemPrompt = effectiveSystemPrompt(event.systemPrompt, latestAppendSystemPrompt, configs, skills);
+		const nextSystemPrompt = effectiveSystemPrompt(event.systemPrompt, latestAppendSystemPrompt, columns, skills);
 
 		return nextSystemPrompt === event.systemPrompt ? undefined : { systemPrompt: nextSystemPrompt };
 	});
@@ -208,17 +205,18 @@ async function showSettings(ctx: ExtensionCommandContext, pi: Pick<ExtensionAPI,
 	if (!latestBaseSystemPrompt) latestBaseSystemPrompt = ctx.getSystemPrompt();
 	const basePrompt = latestBaseSystemPrompt;
 
-	const configs = loadScopedConfigs(cwd);
-	const saveScope = (scope: SettingsScope) => saveScopedConfig(scope, cwd, configs[scope], pi);
+	const columns = loadConfigColumns(cwd, sessionConfig);
+	const saveScope = (scope: SettingsScope) => saveScopedConfig(scope, cwd, configForScope(columns, scope), pi);
 
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
 		const matrixHeight = () => Math.max(8, Math.min(SETTINGS_MATRIX_FIXED_LINES, tui.terminal.rows - 4));
 		const fullPageSize = () => Math.max(8, tui.terminal.rows - 4);
-		const rows = mainRows(basePrompt, skills, configs, saveScope, theme, matrixHeight, fullPageSize);
+		const rows = mainRows(basePrompt, skills, columns, saveScope, theme, matrixHeight, fullPageSize);
 		return createMatrix(rows, {
 			title: "Prompt sections",
 			theme,
-			reset: () => resetAllSettings(configs, saveScope),
+			columns,
+			reset: () => resetAllSettings(columns, saveScope),
 			done: () => done(undefined),
 			fixedHeight: matrixHeight,
 		});
@@ -228,21 +226,21 @@ async function showSettings(ctx: ExtensionCommandContext, pi: Pick<ExtensionAPI,
 function mainRows(
 	basePrompt: string,
 	skills: Skill[],
-	configs: ScopedConfigs,
+	columns: ConfigColumn[],
 	saveScope: (scope: SettingsScope) => void,
 	theme: Theme,
 	matrixHeight: () => number,
 	fullPageSize: () => number,
 ): MatrixRow[] {
-	const sectionRows = promptSectionRows(configs, saveScope);
+	const sectionRows = promptSectionRows(columns, saveScope);
 	const skillInvocationRow: MatrixRow = {
 		id: "skillInvocations",
 		label: "Skill invocations in prompt",
 		description: "Enter opens individual skills.",
 		preview: () => promptSectionText("skills") ?? formatSkillsForPrompt(configurableSkills(skills)),
-		effective: () => skillsSummary(skills, effectiveAllowedSkillNames(configs, skills)),
-		cellText: (scope) => skillScopeSummaryForSkills(configs[scope], configurableSkills(skills)),
-		open: (done) => createSkillsMatrix(skills, configs, saveScope, done, theme, matrixHeight),
+		effective: () => skillsSummary(skills, effectiveAllowedSkillNames(columns, skills)),
+		cellText: (column) => skillScopeSummaryForSkills(column.config, configurableSkills(skills)),
+		open: (done) => createSkillsMatrix(skills, columns, saveScope, done, theme, matrixHeight),
 	};
 	const skillsRowIndex = sectionRows.findIndex((row) => row.id === "skills");
 	sectionRows.splice(skillsRowIndex + 1, 0, skillInvocationRow);
@@ -252,13 +250,13 @@ function mainRows(
 			id: "fullPrompt",
 			label: "Full system prompt",
 			description: "Enter opens the full effective system prompt preview. In preview, press p to hide or show disabled parts.",
-			previewLines: (width) => fullSystemPromptPreviewLines(basePrompt, latestAppendSystemPrompt, configs, skills, width),
+			previewLines: (width) => fullSystemPromptPreviewLines(basePrompt, latestAppendSystemPrompt, columns, skills, width),
 			previewLineLimit: 12,
 			effective: () => "preview",
 			open: (done) => createFullPromptViewer(
 				(width, hideDisabledParts) => hideDisabledParts
-					? enabledSystemPromptPreviewLines(basePrompt, latestAppendSystemPrompt, configs, skills, width)
-					: fullSystemPromptPreviewLines(basePrompt, latestAppendSystemPrompt, configs, skills, width),
+					? enabledSystemPromptPreviewLines(basePrompt, latestAppendSystemPrompt, columns, skills, width)
+					: fullSystemPromptPreviewLines(basePrompt, latestAppendSystemPrompt, columns, skills, width),
 				theme,
 				fullPageSize,
 				done,
@@ -268,17 +266,17 @@ function mainRows(
 	];
 }
 
-function promptSectionRows(configs: ScopedConfigs, saveScope: (scope: SettingsScope) => void): MatrixRow[] {
+function promptSectionRows(columns: ConfigColumn[], saveScope: (scope: SettingsScope) => void): MatrixRow[] {
 	return PROMPT_SECTION_DEFINITIONS.map((section) => ({
 		id: section.name,
 		label: section.label,
 		description: section.description,
 		preview: () => promptSectionText(section.name) ?? "",
-		effective: () => section.name === "appendSection" ? appendEffective(configs) : onOff(resolveSection(configs, section.name)),
-		cell: (scope) => sectionCell(configs[scope], section.name),
-		cellText: section.name === "appendSection" ? (scope) => appendCellText(configs[scope], scope) : undefined,
+		effective: () => section.name === "appendSection" ? appendEffective(columns) : onOff(resolveSection(columns, section.name)),
+		cell: (column) => sectionCell(column.config, section.name),
+		cellText: section.name === "appendSection" ? (column) => appendCellText(column, sectionCell(column.config, section.name)) : undefined,
 		setCell: (scope, state) => {
-			setSectionCell(configs[scope], section.name, state);
+			setSectionCell(configForScope(columns, scope), section.name, state);
 			saveScope(scope);
 		},
 	}));
@@ -286,7 +284,7 @@ function promptSectionRows(configs: ScopedConfigs, saveScope: (scope: SettingsSc
 
 function createSkillsMatrix(
 	skills: Skill[],
-	configs: ScopedConfigs,
+	columns: ConfigColumn[],
 	saveScope: (scope: SettingsScope) => void,
 	done: () => void,
 	theme: Theme,
@@ -299,18 +297,18 @@ function createSkillsMatrix(
 			label: group.label,
 			description: group.description,
 			preview: () => formatSkillsForPrompt(group.skills),
-			effective: () => skillsSummary(group.skills, effectiveAllowedSkillNames(configs, skills)),
-			cellText: (scope) => skillScopeSummaryForSkills(configs[scope], group.skills),
+			effective: () => skillsSummary(group.skills, effectiveAllowedSkillNames(columns, skills)),
+			cellText: (column) => skillScopeSummaryForSkills(column.config, group.skills),
 		},
 		...group.skills.map((skill): MatrixRow => ({
 			id: skill.name,
 			label: `  ${skill.name}`,
 			description: skill.description,
 			preview: () => skillPromptBlock(skill),
-			effective: () => onOff(effectiveSkillEnabled(configs, skill.name)),
-			cell: (scope) => skillCell(configs[scope], skill.name),
+			effective: () => onOff(effectiveSkillEnabled(columns, skill.name)),
+			cell: (column) => skillCell(column.config, skill.name),
 			setCell: (scope, state) => {
-				setSkillCell(configs[scope], skill.name, state);
+				setSkillCell(configForScope(columns, scope), skill.name, state);
 				saveScope(scope);
 			},
 		})),
@@ -321,10 +319,10 @@ function createSkillsMatrix(
 			label: "All skills",
 			description: "Press s, d, or g to toggle all skills at that scope.",
 			preview: () => promptSectionText("skills") ?? formatSkillsForPrompt(availableSkills),
-			effective: () => skillsSummary(skills, effectiveAllowedSkillNames(configs, skills)),
-			cell: (scope) => allSkillsCell(configs[scope]),
+			effective: () => skillsSummary(skills, effectiveAllowedSkillNames(columns, skills)),
+			cell: (column) => allSkillsCell(column.config),
 			setCell: (scope, state) => {
-				setAllSkillsCell(configs[scope], state);
+				setAllSkillsCell(configForScope(columns, scope), state);
 				saveScope(scope);
 			},
 		},
@@ -334,7 +332,8 @@ function createSkillsMatrix(
 	return createMatrix(rows, {
 		title: "Skill invocations in prompt",
 		theme,
-		reset: () => resetSkillSettings(configs, saveScope),
+		columns,
+		reset: () => resetSkillSettings(columns, saveScope),
 		done,
 		search: true,
 		fixedHeight,
@@ -414,12 +413,12 @@ function createMatrix(rows: MatrixRow[], options: MatrixOptions): Component {
 			const lines: string[] = [];
 			lines.push(truncate(styleTitle(options.theme, options.title), width));
 			if (options.search) lines.push(truncate(`Search: ${query}`, width));
-			lines.push(formatHeader(width, options.theme));
+			lines.push(formatHeader(width, options.theme, options.columns));
 
 			const start = Math.max(0, Math.min(selectedRow - 7, Math.max(0, rowsToRender.length - 15)));
 			const end = Math.min(start + 15, rowsToRender.length);
 			for (let i = start; i < end; i++) {
-				lines.push(formatRow(rowsToRender[i], i === selectedRow, width));
+				lines.push(formatRow(rowsToRender[i], i === selectedRow, width, options.columns));
 			}
 
 			if (start > 0 || end < rowsToRender.length) lines.push(`  (${selectedRow + 1}/${rowsToRender.length})`);
@@ -427,8 +426,8 @@ function createMatrix(rows: MatrixRow[], options: MatrixOptions): Component {
 			const row = selected();
 			if (row?.description) renderWrappedSection(lines, row.description, width);
 			lines.push("", truncate(options.search
-				? "  ↑/↓ row · s session · d directory · g global · r reset · Type search · Esc back"
-				: "  ↑/↓ row · s session · d directory · g global · r reset · Esc close", width));
+				? "  ↑/↓ row · s session · d directory · g global · r reset · Type search · Parent read-only · Esc back"
+				: "  ↑/↓ row · s session · d directory · g global · r reset · Parent read-only · Esc close", width));
 			if (row && (row.preview || row.previewLines)) renderPreview(lines, row, width, options.theme);
 			return fitLinesToHeight(lines, options.fixedHeight?.());
 		},
@@ -472,7 +471,7 @@ function createMatrix(rows: MatrixRow[], options: MatrixOptions): Component {
 	function toggleSelectedCell(scope: SettingsScope): void {
 		const row = selected();
 		if (!row?.setCell || !row.cell) return;
-		row.setCell(scope, nextCellState(row.cell(scope)));
+		row.setCell(scope, nextCellState(row.cell(configColumnForScope(options.columns, scope))));
 	}
 
 	function handleSearchInput(data: string): void {
@@ -563,25 +562,25 @@ function renderPreview(lines: string[], row: MatrixRow, width: number, theme: Th
 	lines.push(truncate(rule, width));
 }
 
-function fullSystemPromptPreviewLines(basePrompt: string, appendSystemPrompt: string | undefined, configs: ScopedConfigs, skills: Skill[], width: number): string[] {
+function fullSystemPromptPreviewLines(basePrompt: string, appendSystemPrompt: string | undefined, columns: ConfigColumn[], skills: Skill[], width: number): string[] {
 	const sections = splitSystemPrompt(basePrompt, appendSystemPrompt);
-	const allowedSkills = effectiveAllowedSkillNames(configs, skills);
+	const allowedSkills = effectiveAllowedSkillNames(columns, skills);
 	const allSkillsDisabled = configurableSkills(skills).length > 0 && allowedSkills.size === 0;
 	const skillBlocks = allSkillsDisabled ? [] : skillPromptBlocks(sections.find((section) => section.name === "skills"), allowedSkills);
 	return promptLinesWithOffsets(basePrompt).flatMap((line) => {
 		const section = sectionForOffset(sections, line.start);
-		const label = previewLabel(section, line.start, configs, skillBlocks, allSkillsDisabled);
+		const label = previewLabel(section, line.start, columns, skillBlocks, allSkillsDisabled);
 		return previewLine(line.text, width, label);
 	});
 }
 
-function enabledSystemPromptPreviewLines(basePrompt: string, appendSystemPrompt: string | undefined, configs: ScopedConfigs, skills: Skill[], width: number): string[] {
-	return fullSystemPromptPreviewLines(effectiveSystemPrompt(basePrompt, appendSystemPrompt, configs, skills), appendSystemPrompt, configs, skills, width);
+function enabledSystemPromptPreviewLines(basePrompt: string, appendSystemPrompt: string | undefined, columns: ConfigColumn[], skills: Skill[], width: number): string[] {
+	return fullSystemPromptPreviewLines(effectiveSystemPrompt(basePrompt, appendSystemPrompt, columns, skills), appendSystemPrompt, columns, skills, width);
 }
 
-function effectiveSystemPrompt(basePrompt: string, appendSystemPrompt: string | undefined, configs: ScopedConfigs, skills: Skill[]): string {
-	const promptWithSectionsRemoved = removeDisabledSections(basePrompt, splitSystemPrompt(basePrompt, appendSystemPrompt), resolvedSections(configs));
-	return filterSkillsInPrompt(promptWithSectionsRemoved, skills, effectiveAllowedSkillNames(configs, skills));
+function effectiveSystemPrompt(basePrompt: string, appendSystemPrompt: string | undefined, columns: ConfigColumn[], skills: Skill[]): string {
+	const promptWithSectionsRemoved = removeDisabledSections(basePrompt, splitSystemPrompt(basePrompt, appendSystemPrompt), resolvedSections(columns));
+	return filterSkillsInPrompt(promptWithSectionsRemoved, skills, effectiveAllowedSkillNames(columns, skills));
 }
 
 function promptLinesWithOffsets(text: string): Array<{ text: string; start: number }> {
@@ -601,17 +600,17 @@ function sectionForOffset(sections: PromptSection[], offset: number): PromptSect
 function previewLabel(
 	section: PromptSection | undefined,
 	offset: number,
-	configs: ScopedConfigs,
+	columns: ConfigColumn[],
 	skillBlocks: Array<{ start: number; end: number; label: string }>,
 	allSkillsDisabled: boolean,
 ): string {
 	if (!section) return "Prompt";
 	if (section.name === "skills") {
-		if (!resolveSection(configs, "skills") || allSkillsDisabled) return "S:Skills [disabled]";
+		if (!resolveSection(columns, "skills") || allSkillsDisabled) return "S:Skills [disabled]";
 		return skillBlocks.find((block) => offset >= block.start && offset < block.end)?.label ?? "S:Skills";
 	}
 	const label = sectionLabel(section.name);
-	return resolveSection(configs, section.name) ? label : `${label} [disabled]`;
+	return resolveSection(columns, section.name) ? label : `${label} [disabled]`;
 }
 
 function skillPromptBlocks(section: PromptSection | undefined, allowedSkills: Set<string>): Array<{ start: number; end: number; label: string }> {
@@ -677,12 +676,13 @@ function sectionLabel(name: PromptSectionName): string {
 	return name[0].toUpperCase() + name.slice(1);
 }
 
-function formatHeader(width: number, theme: Theme): string {
-	return truncate(theme.bold(`  ${pad("Setting", SETTING_COLUMN_WIDTH)}  ${pad("Effective", EFFECTIVE_COLUMN_WIDTH)}  ${pad("Session", SCOPE_COLUMN_WIDTH)}  ${pad("Directory", SCOPE_COLUMN_WIDTH)}  ${pad("Global", SCOPE_COLUMN_WIDTH)}`), width);
+function formatHeader(width: number, theme: Theme, columns: ConfigColumn[]): string {
+	const scopeLabels = columns.map((column) => pad(column.label, SCOPE_COLUMN_WIDTH));
+	return truncate(theme.bold(`  ${pad("Setting", SETTING_COLUMN_WIDTH)}  ${pad("Effective", EFFECTIVE_COLUMN_WIDTH)}  ${scopeLabels.join("  ")}`), width);
 }
 
-function formatRow(row: MatrixRow, selected: boolean, width: number): string {
-	const values = SCOPES.map((scope) => formatCell(row.cellText?.(scope) ?? row.cell?.(scope) ?? "unset"));
+function formatRow(row: MatrixRow, selected: boolean, width: number, columns: ConfigColumn[]): string {
+	const values = columns.map((column) => formatCell(row.cellText?.(column) ?? row.cell?.(column) ?? "unset"));
 	const prefix = selected ? "▸ " : "  ";
 	return truncate(`${prefix}${pad(row.label, SETTING_COLUMN_WIDTH)}  ${pad(row.effective(), EFFECTIVE_COLUMN_WIDTH)}  ${values.join("  ")}`, width);
 }
@@ -691,14 +691,13 @@ function formatCell(value: CellState | string): string {
 	return pad(value === "unset" || value === "" ? "—" : value, SCOPE_COLUMN_WIDTH);
 }
 
-function appendEffective(configs: ScopedConfigs): string {
-	if (!resolveSection(configs, "appendSection")) return "off";
+function appendEffective(columns: ConfigColumn[]): string {
+	if (!resolveSection(columns, "appendSection")) return "off";
 	return latestAppendSystemPrompt ? "active" : "inactive";
 }
 
-function appendCellText(config: PromptSectionsConfig, scope: SettingsScope): string {
-	const state = sectionCell(config, "appendSection");
-	if (latestAppendScope !== scope) return state;
+function appendCellText(column: ConfigColumn, state: CellState): string {
+	if (latestAppendScope !== column.editableScope) return state;
 	return state === "unset" ? "active" : `active/${state}`;
 }
 
@@ -721,63 +720,17 @@ function nextCellState(current: CellState): CellState {
 	return "unset";
 }
 
-function sectionCell(config: PromptSectionsConfig, section: keyof SectionSettings): CellState {
-	const sections = config.sections;
-	if (!hasOwn(sections, section)) return "unset";
-	return sections[section] ? "on" : "off";
-}
-
-function setSectionCell(config: PromptSectionsConfig, section: keyof SectionSettings, state: CellState): void {
-	config.sections ??= {};
-	if (state === "unset") delete config.sections[section];
-	else config.sections[section] = state === "on";
-	cleanConfig(config);
-}
-
-function resolveSection(configs: ScopedConfigs, section: keyof SectionSettings): boolean {
-	for (const scope of SCOPES) {
-		const state = sectionCell(configs[scope], section);
+function resolveSection(columns: ConfigColumn[], section: keyof SectionSettings): boolean {
+	for (const column of columns) {
+		const state = sectionCell(column.config, section);
 		if (state !== "unset") return state === "on";
 	}
 	return DEFAULT_SECTIONS[section];
 }
 
-function skillCell(config: PromptSectionsConfig, skillName: string): CellState {
-	const skills = config.skills;
-	if (skills?.allow?.includes(skillName)) return "on";
-	if (skills?.deny?.includes(skillName)) return "off";
-	return "unset";
-}
-
-function setSkillCell(config: PromptSectionsConfig, skillName: string, state: CellState): void {
-	config.skills ??= {};
-	const allow = new Set(config.skills.allow ?? []);
-	const deny = new Set(config.skills.deny ?? []);
-	allow.delete(skillName);
-	deny.delete(skillName);
-	if (state === "on") allow.add(skillName);
-	if (state === "off") deny.add(skillName);
-	config.skills.allow = sortedStrings(allow);
-	config.skills.deny = sortedStrings(deny);
-	cleanConfig(config);
-}
-
-function allSkillsCell(config: PromptSectionsConfig): CellState {
-	const settings = config.skills;
-	if (!hasOwn(settings, "default")) return "unset";
-	return settings.default ? "on" : "off";
-}
-
-function setAllSkillsCell(config: PromptSectionsConfig, state: CellState): void {
-	config.skills ??= {};
-	if (state === "unset") delete config.skills.default;
-	else config.skills.default = state === "on";
-	cleanConfig(config);
-}
-
-function effectiveSkillEnabled(configs: ScopedConfigs, skillName: string): boolean {
-	for (const scope of SCOPES) {
-		const state = effectiveSkillCell(configs[scope], skillName);
+function effectiveSkillEnabled(columns: ConfigColumn[], skillName: string): boolean {
+	for (const column of columns) {
+		const state = effectiveSkillCell(column.config, skillName);
 		if (state !== "unset") return state === "on";
 	}
 	return true;
@@ -792,9 +745,9 @@ function effectiveSkillCell(config: PromptSectionsConfig, skillName: string): Ce
 	return settings.default ? "on" : "off";
 }
 
-function effectiveAllowedSkillNames(configs: ScopedConfigs, skills: Skill[]): Set<string> {
+function effectiveAllowedSkillNames(columns: ConfigColumn[], skills: Skill[]): Set<string> {
 	return new Set(configurableSkills(skills)
-		.filter((skill) => effectiveSkillEnabled(configs, skill.name))
+		.filter((skill) => effectiveSkillEnabled(columns, skill.name))
 		.map((skill) => skill.name));
 }
 
@@ -827,40 +780,26 @@ function configurableSkills(skills: Skill[]): Skill[] {
 	return skills.filter((skill) => !skill.disableModelInvocation);
 }
 
-function resetAllSettings(configs: ScopedConfigs, saveScope: (scope: SettingsScope) => void): void {
-	for (const scope of SCOPES) {
-		delete configs[scope].sections;
-		delete configs[scope].skills;
+function resetAllSettings(columns: ConfigColumn[], saveScope: (scope: SettingsScope) => void): void {
+	for (const scope of EDITABLE_SCOPES) {
+		const config = configForScope(columns, scope);
+		delete config.sections;
+		delete config.skills;
 		saveScope(scope);
 	}
 }
 
-function resetSkillSettings(configs: ScopedConfigs, saveScope: (scope: SettingsScope) => void): void {
-	for (const scope of SCOPES) {
-		delete configs[scope].skills;
+function resetSkillSettings(columns: ConfigColumn[], saveScope: (scope: SettingsScope) => void): void {
+	for (const scope of EDITABLE_SCOPES) {
+		delete configForScope(columns, scope).skills;
 		saveScope(scope);
 	}
 }
 
-function cleanConfig(config: PromptSectionsConfig): void {
-	if (config.sections && Object.keys(config.sections).length === 0) delete config.sections;
-	if (config.skills?.allow?.length === 0) delete config.skills.allow;
-	if (config.skills?.deny?.length === 0) delete config.skills.deny;
-	if (config.skills && Object.keys(config.skills).length === 0) delete config.skills;
-}
-
-function resolvedSections(configs: ScopedConfigs): SectionSettings {
+function resolvedSections(columns: ConfigColumn[]): SectionSettings {
 	return Object.fromEntries(
-		PROMPT_SECTION_DEFINITIONS.map((section) => [section.name, resolveSection(configs, section.name)]),
+		PROMPT_SECTION_DEFINITIONS.map((section) => [section.name, resolveSection(columns, section.name)]),
 	) as SectionSettings;
-}
-
-function loadScopedConfigs(cwd: string): ScopedConfigs {
-	return {
-		session: sessionConfig,
-		directory: readConfig(directoryConfigPath(cwd)),
-		global: readConfig(globalConfigPath()),
-	};
 }
 
 function saveScopedConfig(scope: SettingsScope, cwd: string, config: PromptSectionsConfig, pi: Pick<ExtensionAPI, "appendEntry">): void {
@@ -870,7 +809,7 @@ function saveScopedConfig(scope: SettingsScope, cwd: string, config: PromptSecti
 		return;
 	}
 
-	writeConfig(scope === "global" ? globalConfigPath() : directoryConfigPath(cwd), config);
+	writeScopedConfig(scope, cwd, config);
 }
 
 function readSessionConfig(entries: unknown[]): PromptSectionsConfig {
@@ -892,34 +831,12 @@ function detectAppendScope(cwd: string, appendSystemPrompt: string | undefined):
 	return undefined;
 }
 
-function globalConfigPath(): string {
-	return join(getAgentDir(), "extensions", CONFIG_FILE_NAME);
-}
-
-function directoryConfigPath(cwd: string): string {
-	return join(cwd, ".pi", CONFIG_FILE_NAME);
-}
-
 function globalAppendPath(): string {
 	return join(getAgentDir(), APPEND_SYSTEM_FILE_NAME);
 }
 
 function directoryAppendPath(cwd: string): string {
 	return join(cwd, ".pi", APPEND_SYSTEM_FILE_NAME);
-}
-
-function readConfig(path: string): PromptSectionsConfig {
-	if (!existsSync(path)) return {};
-	return JSON.parse(readFileSync(path, "utf-8")) as PromptSectionsConfig;
-}
-
-function writeConfig(path: string, config: PromptSectionsConfig): void {
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
-}
-
-function sortedStrings(values: Set<string>): string[] {
-	return [...values].sort((a, b) => a.localeCompare(b));
 }
 
 function onOff(value: boolean): "on" | "off" {

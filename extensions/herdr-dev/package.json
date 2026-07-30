@@ -1,0 +1,41 @@
+{
+  "name": "pi-herdr-dev",
+  "version": "0.1.0",
+  "description": "Run a project's development server in a dedicated Herdr tab and make it visible to Pi.",
+  "type": "module",
+  "author": "Travis Pew",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "herdr",
+    "dev-server"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "pack:check": "npm pack --dry-run",
+    "check": "npm run typecheck && npm test && npm run pack:check"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.10",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
