@@ -1,0 +1,15 @@
+{
+  "name": "pi-auto-session-name",
+  "version": "0.1.0",
+  "description": "Tiny Pi extension that auto-names new sessions using OpenAI Codex.",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
