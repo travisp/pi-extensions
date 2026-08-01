@@ -78,6 +78,12 @@ type SshAskPassSession = {
 	close: () => Promise<void>;
 };
 
+type MoshiApproval = {
+	actionId: string;
+	toolName: string;
+	reason: string;
+};
+
 const CONNECT_TIMEOUT_MS = 10_000;
 const COMMAND_TIMEOUT_MS = 120_000;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -140,6 +146,51 @@ function sudoStartupCommand(args: string, readyToken: string): string {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function sendMoshiApprovalEvent(
+	ctx: ExtensionCommandContext | ExtensionContext,
+	eventName: "PermissionRequest" | "PermissionResolved",
+	approval: MoshiApproval,
+	approved?: boolean,
+): void {
+	const event = eventName === "PermissionRequest"
+		? {
+				type: "tool_approval_requested",
+				toolName: approval.toolName,
+				toolCallId: approval.actionId,
+				reason: approval.reason,
+			}
+		: {
+				type: "tool_approval_resolved",
+				toolName: approval.toolName,
+				toolCallId: approval.actionId,
+				approved: Boolean(approved),
+			};
+	const payload = {
+		hook_event_name: eventName,
+		session_id: ctx.sessionManager.getSessionId(),
+		transcript_path: ctx.sessionManager.getSessionFile() ?? "",
+		cwd: ctx.cwd,
+		model: ctx.model?.name ?? ctx.model?.id ?? "",
+		event,
+		tool_name: approval.toolName,
+		tool_use_id: approval.actionId,
+		...(eventName === "PermissionRequest" ? { reason: approval.reason } : { approved: Boolean(approved) }),
+	};
+
+	try {
+		const child = spawn(process.env.MOSHI_HOOK_BINARY || "moshi-hook", ["pi-hook"], {
+			stdio: ["pipe", "ignore", "ignore"],
+			detached: true,
+		});
+		child.on("error", () => undefined);
+		child.stdin.on("error", () => undefined);
+		child.stdin.end(JSON.stringify(payload));
+		child.unref();
+	} catch {
+		// Moshi integration is optional; the normal terminal prompt remains active.
+	}
 }
 
 function isSudoPasswordRequired(error: unknown): boolean {
@@ -522,12 +573,27 @@ class ElevationManager {
 		return this.isActive() ? this.transport : null;
 	}
 
-	async approve(ctx: ExtensionCommandContext | ExtensionContext, responseScopeDescription = "this agent response"): Promise<SshShellTransport> {
+	async approve(
+		ctx: ExtensionCommandContext | ExtensionContext,
+		responseScopeDescription = "this agent response",
+		actionId = randomToken("remote-admin-elevation"),
+	): Promise<SshShellTransport> {
 		if (this.isActive() && this.transport) return this.transport;
 		await this.revoke();
 
 		const responseOption = `Just for ${responseScopeDescription}`;
-		const choice = await ctx.ui.select("Approve elevated remote session?", [responseOption, "Persistent until revoked", "No"]);
+		const approval: MoshiApproval = {
+			actionId,
+			toolName: "remote_admin_elevate",
+			reason: `Approve an elevated root SSH session for ${this.config.target}?`,
+		};
+		sendMoshiApprovalEvent(ctx, "PermissionRequest", approval);
+		let choice: string | undefined;
+		try {
+			choice = await ctx.ui.select("Approve elevated remote session?", [responseOption, "Persistent until revoked", "No"]);
+		} finally {
+			sendMoshiApprovalEvent(ctx, "PermissionResolved", approval, Boolean(choice && choice !== "No"));
+		}
 		if (!choice || choice === "No") throw new Error("Elevated remote session was not approved");
 
 		const scope: ElevationScope = choice === "Persistent until revoked" ? "persistent" : "agent-response";
@@ -1124,10 +1190,10 @@ export default function (pi: ExtensionAPI) {
 			description: "Ask the human to approve an elevated root SSH session for remote-admin. If sudo requires a password, it is prompted locally and is not shown to the model.",
 			promptSnippet: "Request human approval for an elevated remote-admin root session when privileged remote operations are required.",
 			parameters: EMPTY_TOOL_PARAMETERS,
-			async execute(_id, _params, _signal, _onUpdate, ctx) {
+			async execute(id, _params, _signal, _onUpdate, ctx) {
 				const state = requireRemote();
 				return runAndRefreshStatus(ctx, async () => {
-					await state.elevation.approve(ctx);
+					await state.elevation.approve(ctx, "this agent response", id);
 					return {
 						content: [
 							{

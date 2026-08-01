@@ -110,6 +110,12 @@ While the elevated session is active, the default remote tools use the root tran
 /remote-admin-revoke
 ```
 
+### Moshi approvals
+
+If `moshi-hook` is installed and running, elevation requests are also forwarded as Pi permission requests. Moshi can then show Approve/Deny controls on your phone while the terminal approval prompt remains active. Approve selects the response-scoped option; choose `Persistent until revoked` directly in the terminal when that broader scope is needed.
+
+Sudo passwords are never sent through Moshi. After approval, enter the password in the masked terminal prompt if sudo requires one.
+
 ## Flags
 
 ```text

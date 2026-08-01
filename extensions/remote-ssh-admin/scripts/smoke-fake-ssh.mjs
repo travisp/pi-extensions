@@ -21,6 +21,7 @@ const { visibleWidth } = await import('@earendil-works/pi-tui');
 const tmp = mkdtempSync(join(tmpdir(), 'pi-remote-ssh-admin-smoke-'));
 const remoteCwd = join(tmp, 'remote');
 const countFile = join(tmp, 'ssh-count');
+const moshiEventsFile = join(tmp, 'moshi-events');
 
 writeFileSync(join(tmp, 'ssh'), `#!/usr/bin/env bash
 count_file=\${PI_FAKE_SSH_COUNT:-}
@@ -68,6 +69,36 @@ fi
 `);
 chmodSync(join(tmp, 'ssh'), 0o755);
 
+writeFileSync(join(tmp, 'sudo'), `#!/usr/bin/env bash
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n|-S) shift ;;
+    -p) shift 2 ;;
+    *) break ;;
+  esac
+done
+exec "$@"
+`);
+chmodSync(join(tmp, 'sudo'), 0o755);
+
+writeFileSync(join(tmp, 'id'), `#!/usr/bin/env bash
+if [[ "$1" == "-u" ]]; then
+  echo 0
+else
+  /usr/bin/id "$@"
+fi
+`);
+chmodSync(join(tmp, 'id'), 0o755);
+
+writeFileSync(join(tmp, 'moshi-hook'), `#!/usr/bin/env bash
+payload=$(cat)
+case "$payload" in
+  *PermissionRequest*) printf '%s' "$payload" > "\${PI_FAKE_MOSHI_EVENTS}.request" ;;
+  *PermissionResolved*) printf '%s' "$payload" > "\${PI_FAKE_MOSHI_EVENTS}.resolved" ;;
+esac
+`);
+chmodSync(join(tmp, 'moshi-hook'), 0o755);
+
 writeFileSync(join(tmp, 'stat'), `#!/usr/bin/env bash
 echo "fake stat should not be required by remote-admin file operations" >&2
 exit 64
@@ -87,6 +118,8 @@ process.env.PATH = `${tmp}:${process.env.PATH}`;
 process.env.PI_FAKE_SSH_COUNT = countFile;
 process.env.PI_FAKE_SSH_REQUIRE_PASSWORD = '1';
 process.env.PI_FAKE_SSH_PASSWORD = 'opensesame';
+process.env.PI_FAKE_MOSHI_EVENTS = moshiEventsFile;
+process.env.MOSHI_HOOK_BINARY = join(tmp, 'moshi-hook');
 
 function makeUi(password) {
   const keybindings = {
@@ -98,7 +131,7 @@ function makeUi(password) {
     },
   };
   return {
-    select: async () => undefined,
+    select: async (_title, choices) => choices[0],
     confirm: async () => true,
     input: async () => undefined,
     notify: () => {},
@@ -143,9 +176,10 @@ try {
   result.runtime.flagValues.set('ssh', `fake:${remoteCwd}`);
   result.runtime.flagValues.set('use-password', true);
   const ext = result.extensions.find((e) => e.path.includes('remote-admin'));
-  const runner = new ExtensionRunner([ext], result.runtime, process.cwd(), { getSessionFile: () => undefined }, { getApiKeyAndHeaders: async () => ({ ok: false }) });
+  const sessionManager = { getSessionId: () => 'smoke-session', getSessionFile: () => undefined };
+  const runner = new ExtensionRunner([ext], result.runtime, process.cwd(), sessionManager, { getApiKeyAndHeaders: async () => ({ ok: false }) });
   const ui = makeUi('opensesame');
-  const ctx = { ui, hasUI: true };
+  const ctx = { ui, hasUI: true, cwd: process.cwd(), sessionManager, model: undefined };
 
   runner.bindCore(
     {
@@ -183,10 +217,26 @@ try {
   const edited = await read.execute('read2', { path: 'round.txt' }, undefined, undefined, ctx);
   if (edited.content[0].text !== 'hello\nremote\n') throw new Error('edit output mismatch');
 
+  const elevate = runner.getToolDefinition('remote_admin_elevate');
+  await elevate.execute('elevate-1', {}, undefined, undefined, ctx);
+  const moshiRequestFile = `${moshiEventsFile}.request`;
+  const moshiResolvedFile = `${moshiEventsFile}.resolved`;
+  for (let attempt = 0; attempt < 50 && (!existsSync(moshiRequestFile) || !existsSync(moshiResolvedFile)); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const moshiRequest = JSON.parse(readFileSync(moshiRequestFile, 'utf8'));
+  const moshiResolved = JSON.parse(readFileSync(moshiResolvedFile, 'utf8'));
+  if (moshiRequest.hook_event_name !== 'PermissionRequest' || moshiRequest.tool_use_id !== 'elevate-1') {
+    throw new Error('Moshi permission request mismatch');
+  }
+  if (moshiResolved.hook_event_name !== 'PermissionResolved' || moshiResolved.approved !== true) {
+    throw new Error('Moshi permission resolution mismatch');
+  }
+
   await runner.emit({ type: 'session_shutdown' });
 
   const sshCount = readFileSync(countFile, 'utf8').trim();
-  if (sshCount !== '1') throw new Error(`expected one persistent SSH process, got ${sshCount}`);
+  if (sshCount !== '2') throw new Error(`expected normal and elevated SSH processes, got ${sshCount}`);
   console.log('fake SSH smoke passed');
 } finally {
   rmSync(tmp, { recursive: true, force: true });
