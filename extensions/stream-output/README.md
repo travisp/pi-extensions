@@ -2,7 +2,7 @@
 
 A small extension for showing live progress during Pi `--print` runs.
 
-It writes status, tool calls, incremental tool output, and tool completion to stderr. Pi's final assistant response remains on stdout, so it is not duplicated and can still be redirected independently.
+It writes status and concise tool calls to stderr without printing tool results. Pi's final assistant response remains on stdout, so it is not duplicated and can still be redirected independently.
 
 The extension is active only in print mode and has no effect on the interactive TUI. It is intentionally omitted from the repository's root Pi package manifest so it can be loaded explicitly by workflows that need it:
 
