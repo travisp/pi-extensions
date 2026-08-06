@@ -9,7 +9,6 @@
   },
   "include": [
     "extensions/prompt-ninja/src/pi-prompt-ninja.ts",
-    "extensions/powerline-patch/index.ts",
     "extensions/remote-ssh-admin/extensions/remote-admin.ts",
     "extensions/custom-permission-gate/pi-custom-permission-gate.ts",
     "extensions/custom-permission-gate/types/**/*.d.ts",

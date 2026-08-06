@@ -9,7 +9,6 @@ Some of these are more developed than others. Extensions published to the npm re
 ## Extensions
 
 - [`prompt-ninja`](extensions/prompt-ninja/) customizes and previews Pi system-prompt sections.
-- [`powerline-patch`](extensions/powerline-patch/) provides the customized powerline footer and shell mode.
 - [`remote-ssh-admin`](extensions/remote-ssh-admin/) routes remote tools through persistent SSH transports with approved elevation.
 - [`custom-permission-gate`](extensions/custom-permission-gate/) prompts before potentially dangerous shell commands.
 - [`auto-session-name`](extensions/auto-session-name/) names new sessions automatically.
