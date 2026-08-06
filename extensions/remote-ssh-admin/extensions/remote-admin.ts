@@ -13,9 +13,10 @@ import { createServer, type Server, type Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { decodeKittyPrintable, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { decodeKittyPrintable, truncateToWidth, visibleWidth, type Text } from "@earendil-works/pi-tui";
 import {
 	type BashOperations,
+	type BashToolInput,
 	createBashToolDefinition,
 	createEditToolDefinition,
 	createReadToolDefinition,
@@ -907,12 +908,11 @@ function renderCallWithToolName<TDefinition extends ToolDefinition<any, any, any
 	const name = () => (typeof toolName === "function" ? toolName() : toolName);
 	if (definition.name === "bash") {
 		return ((args, theme, context) => {
-			const component = renderCall(args, theme, context);
-			const command = typeof args?.command === "string" ? args.command : "";
-			const timeout = typeof args?.timeout === "number" ? args.timeout : undefined;
-			const commandDisplay = command || theme.fg("toolOutput", "...");
-			const timeoutSuffix = timeout ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
-			(component as { setText(text: string): void }).setText(theme.fg("toolTitle", theme.bold(`${name()} $ ${commandDisplay}`)) + timeoutSuffix);
+			const component = renderCall(args, theme, context) as Text;
+			const bashArgs = args as BashToolInput;
+			const commandDisplay = bashArgs.command || theme.fg("toolOutput", "...");
+			const timeoutSuffix = bashArgs.timeout ? theme.fg("muted", ` (timeout ${bashArgs.timeout}s)`) : "";
+			component.setText(theme.fg("toolTitle", theme.bold(`${name()} $ ${commandDisplay}`)) + timeoutSuffix);
 			return component;
 		}) as TDefinition["renderCall"];
 	}
@@ -1201,6 +1201,7 @@ export default function (pi: ExtensionAPI) {
 								text: `Elevated remote session active for ${state.elevation.describe()}. Default remote tools now use the root transport until the approved scope ends or it is revoked.`,
 							},
 						],
+						details: {},
 					};
 				});
 			},

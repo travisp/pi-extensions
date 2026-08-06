@@ -19,7 +19,9 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typescript": "^5.0.0"
+    "@earendil-works/pi-coding-agent": "^0.84.0",
+    "@earendil-works/pi-tui": "^0.84.0",
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.3"
   }
 }

@@ -1,4 +1,3 @@
-import { complete } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const MODEL_PROVIDER = "openai-codex";
@@ -54,10 +53,9 @@ async function generateName(
 	const model = modelRegistry.find(MODEL_PROVIDER, MODEL_ID);
 	if (!model) throw new Error(`Model not found: ${MODEL_PROVIDER}/${MODEL_ID}`);
 
-	const auth = await modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) throw new Error(`Model auth failed: ${auth.error}`);
+	if (!modelRegistry.hasConfiguredAuth(model)) throw new Error(`Model auth not configured: ${MODEL_PROVIDER}/${MODEL_ID}`);
 
-	const response = await complete(
+	const response = await modelRegistry.complete(
 		model,
 		{
 			systemPrompt: SYSTEM_PROMPT,
@@ -69,11 +67,7 @@ async function generateName(
 				},
 			],
 		},
-		{
-			apiKey: auth.apiKey,
-			headers: auth.headers,
-			maxTokens: 64,
-		},
+		{ maxTokens: 64 },
 	);
 
 	if (response.stopReason === "error") throw new Error(response.errorMessage);
@@ -83,7 +77,8 @@ async function generateName(
 
 type TextPart = { type: "text"; text: string };
 
-function textContent(content: ReadonlyArray<{ type: string }>): string {
+function textContent(content: string | ReadonlyArray<{ type: string }>): string {
+	if (typeof content === "string") return content.trim();
 	return content.filter(isTextPart).map((part) => part.text).join("\n").trim();
 }
 

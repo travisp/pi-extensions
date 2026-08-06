@@ -6,6 +6,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type Skill,
+	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { getKeybindings, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import {
@@ -41,11 +42,6 @@ type MatrixRow = {
 	cellText?: (column: ConfigColumn) => string;
 	setCell?: (scope: SettingsScope, state: CellState) => void;
 	open?: (done: () => void) => Component;
-};
-
-type Theme = {
-	bold: (text: string) => string;
-	fg: (color: string, text: string) => string;
 };
 
 type MatrixOptions = {
@@ -498,6 +494,7 @@ function createFullPromptViewer(
 	const contentLineCount = () => Math.max(1, pageSize() - FULL_PROMPT_VIEWER_FIXED_LINES);
 
 	return {
+		invalidate: () => {},
 		render: (width) => {
 			const contentLines = linesForWidth(width, hideDisabledParts);
 			const visibleLineCount = contentLineCount();
