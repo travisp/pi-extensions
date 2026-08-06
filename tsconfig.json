@@ -16,6 +16,7 @@
     "extensions/auto-session-name/index.ts",
     "extensions/slash-command-guard/index.ts",
     "extensions/system-prompt-display/index.ts",
-    "extensions/herdr-dev/src/index.ts"
+    "extensions/herdr-dev/src/index.ts",
+    "extensions/stream-output/index.ts"
   ]
 }

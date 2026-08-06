@@ -16,6 +16,7 @@ Some of these are more developed than others. Extensions published to the npm re
 - [`slash-command-guard`](extensions/slash-command-guard/) (**npm:** [`@smallbatchcode/pi-slash-command-guard`](https://www.npmjs.com/package/@smallbatchcode/pi-slash-command-guard)) prevents mistyped or unknown slash commands from being sent as regular user messages. If there is a close known command, it includes a “Did you mean ...?” hint; otherwise it shows an unknown-command error.
 - [`system-prompt-display`](extensions/system-prompt-display/) records the initial system prompt and later changes.
 - [`herdr-dev`](extensions/herdr-dev/) runs a project's development server in a dedicated Herdr tab.
+- [`stream-output`](extensions/stream-output/) streams progress from explicitly configured Pi print-mode runs; it is intentionally not loaded by the root package.
 
 ## Usage
 
