@@ -9,7 +9,6 @@
     "extensions": [
       "./extensions/prompt-ninja/src/pi-prompt-ninja.ts",
       "./extensions/remote-ssh-admin/extensions/remote-admin.ts",
-      "./extensions/custom-permission-gate/pi-custom-permission-gate.ts",
       "./extensions/auto-session-name/index.ts",
       "./extensions/slash-command-guard/index.ts",
       "./extensions/system-prompt-display/index.ts",
