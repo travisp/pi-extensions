@@ -28,7 +28,7 @@ The extension is inactive unless `--ssh` is passed.
 
 - SSH key-based auth from the local Pi machine, or `--use-password` in interactive TUI mode (masked local popup)
 - a remote login shell that accepts standard shell commands
-- standard shell tools: `mv`, `mkdir`, `rm`, `mktemp`, `base64`, `wc`, and `tr` (GNU/Linux and macOS/BSD variants are supported)
+- standard shell tools: `cat`, `mkdir`, `rm`, `mktemp`, `base64`, `wc`, and `tr` (GNU/Linux and macOS/BSD variants are supported)
 
 No `tmux`, Python, Node, Perl, or Pi installation is required on the remote host.
 
@@ -46,6 +46,8 @@ With `--use-password`, if SSH asks for a login password or key passphrase, the e
 
 File reads and writes use base64 through the shell stream, so binary files are not sent as raw terminal data. The maximum file size is 25 MiB.
 
+Writes decode into a temporary file first, then overwrite the destination in place. Existing ownership and permissions are retained, symlinks are followed, and hard links continue to share the updated contents. New files use the remote shell's umask. The final overwrite is not atomic: interruption during copying can leave partial contents.
+
 ## Differences from the [ssh extension example in the pi respository](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/ssh.ts).
 - Adds `local_` versions of tools so that the agent can also perform actions locally (especially local skills etc.)
 - Adds a mechanism for granting elevated access via sudo password on the remote server to the agent.
@@ -60,7 +62,7 @@ When active, these default Pi tools operate on the remote host:
 - `edit`
 - `bash`
 
-User `!` bash commands also run remotely.
+User `!` and `!!` bash commands also run remotely. If SSH initialization fails, they return an error without executing locally. Fix the connection and run `/reload` before retrying.
 
 Local escape hatches are always available when the extension is active:
 
@@ -168,4 +170,4 @@ If you already have a `powerline` object, keep your existing fields and add the 
 npm run smoke:fake-ssh
 ```
 
-Runs a very poor local smoke test with a fake `ssh` executable and verifies that bash/read/write/edit share one persistent transport.
+Runs a local smoke test with fake SSH and sudo executables. It covers persistent transports, failed-authentication command blocking, read/write/edit, file permissions and inode preservation, symlinks/hard links, and elevation routing. It does not test real SSH authentication or root ownership changes.

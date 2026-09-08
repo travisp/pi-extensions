@@ -16,7 +16,8 @@
     ]
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs extensions/herdr-dev/test/*.test.mjs && cd extensions/remote-ssh-admin && node scripts/smoke-fake-ssh.mjs"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.0",

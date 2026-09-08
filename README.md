@@ -38,3 +38,14 @@ pi install npm:@smallbatchcode/pi-slash-command-guard@0.1.3
 ```
 
 The root package loads only each extension's declared entry point, so support files and tests under `extensions/` are not treated as standalone extensions.
+
+## Development
+
+Use the root Devbox environment with the declared development dependencies available:
+
+```bash
+devbox run npm test
+devbox run npm run typecheck
+```
+
+Tests cover prompt-section isolation against the installed Pi prompt builder, project trust, concurrent Herdr state updates across processes, and remote file operations/routing through fake SSH. They use temporary directories and do not contact a real SSH server.

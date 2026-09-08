@@ -34,25 +34,24 @@ export type ConfigColumn = {
 const CONFIG_FILE_NAME = "prompt-sections.json";
 const PROMPT_SECTION_NAMES: PromptSectionName[] = ["intro", "tools", "guidelines", "piDocumentation", "appendSection", "projectContext", "skills", "runtimeContext"];
 
-export const EDITABLE_SCOPES: SettingsScope[] = ["session", "directory", "global"];
-
-export function loadConfigColumns(cwd: string, sessionConfig: PromptSectionsConfig): ConfigColumn[] {
+export function loadConfigColumns(cwd: string, sessionConfig: PromptSectionsConfig, projectTrusted: boolean): ConfigColumn[] {
 	return [
 		{ id: "session", label: "Session", config: sessionConfig, editableScope: "session" },
-		{ id: "directory", label: "Directory", config: readConfig(directoryConfigPath(cwd)), editableScope: "directory" },
-		{ id: "parent", label: "Parent", config: readParentConfig(cwd) },
+		{
+			id: "directory",
+			label: projectTrusted ? "Directory" : "Dir (untrusted)",
+			config: projectTrusted ? readConfig(directoryConfigPath(cwd)) : {},
+			editableScope: projectTrusted ? "directory" : undefined,
+		},
+		{ id: "parent", label: projectTrusted ? "Parent" : "Par (untrusted)", config: projectTrusted ? readParentConfig(cwd) : {} },
 		{ id: "global", label: "Global", config: readConfig(globalConfigPath()), editableScope: "global" },
 	];
 }
 
 export function configForScope(columns: ConfigColumn[], scope: SettingsScope): PromptSectionsConfig {
-	return configColumnForScope(columns, scope).config;
-}
-
-export function configColumnForScope(columns: ConfigColumn[], scope: SettingsScope): ConfigColumn {
 	const column = columns.find((candidate) => candidate.editableScope === scope);
 	if (!column) throw new Error(`Missing config column for scope: ${scope}`);
-	return column;
+	return column.config;
 }
 
 export function writeScopedConfig(scope: Exclude<SettingsScope, "session">, cwd: string, config: PromptSectionsConfig): void {

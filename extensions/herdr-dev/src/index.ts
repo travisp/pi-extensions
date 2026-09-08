@@ -1,6 +1,4 @@
-import { readFile, realpath, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { StateStore } from "./state-store.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	DEFAULT_LOG_LINES,
@@ -57,14 +55,6 @@ const DEV_TOOL_COMPLETIONS = [
 	{ value: "tool off", label: "tool off", description: "Disable the dev_server agent tool" },
 ];
 
-type ProjectState = {
-	command?: string;
-	paneId?: string;
-	toolEnabled?: boolean;
-};
-
-type StateFile = Record<string, ProjectState>;
-
 type DevStatus = {
 	state: "running" | "idle" | "stopped";
 	command?: string;
@@ -75,51 +65,6 @@ type RouteResult = {
 	text: string;
 	status?: DevStatus;
 };
-
-class StateStore {
-	private readonly path: string;
-
-	constructor() {
-		const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-		this.path = join(agentDir, "pi-herdr-dev.json");
-	}
-
-	private async load(): Promise<StateFile> {
-		try {
-			return JSON.parse(await readFile(this.path, "utf8")) as StateFile;
-		} catch (error) {
-			if ((error as { code?: string }).code === "ENOENT") return {};
-			throw error;
-		}
-	}
-
-	private async save(state: StateFile): Promise<void> {
-		const temporaryPath = `${this.path}.${process.pid}.tmp`;
-		await writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-		await rename(temporaryPath, this.path);
-	}
-
-	private projectKey(cwd: string): Promise<string> {
-		return realpath(cwd);
-	}
-
-	async get(cwd: string): Promise<ProjectState | undefined> {
-		return (await this.load())[await this.projectKey(cwd)];
-	}
-
-	async update(cwd: string, changes: ProjectState): Promise<void> {
-		const state = await this.load();
-		const key = await this.projectKey(cwd);
-		state[key] = { ...state[key], ...changes };
-		await this.save(state);
-	}
-
-	async remove(cwd: string): Promise<void> {
-		const state = await this.load();
-		delete state[await this.projectKey(cwd)];
-		await this.save(state);
-	}
-}
 
 function trimLogOutput(output: string): string {
 	if (Buffer.byteLength(output) <= MAX_LOG_BYTES) return output.trimEnd();

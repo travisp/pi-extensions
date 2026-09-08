@@ -64,6 +64,8 @@ No files are written to project directories. Pane IDs and remembered commands ar
 
 `PI_CODING_AGENT_DIR` is respected when set. Stopping a server keeps its remembered command for the next start; forgetting it removes the project entry entirely.
 
+State mutations hold a cross-process directory lock (`pi-herdr-dev.json.lock`) for the complete read–modify–write transaction, then replace the JSON file atomically. Readers see either the previous or the new complete state. Lock acquisition times out after five seconds rather than waiting indefinitely. If a process crashes while holding the lock, stop other Pi sessions before removing the leftover lock directory and retrying. This lock protects saved state; it does not serialize concurrent server start/stop commands.
+
 ## Requirements
 
 - Pi

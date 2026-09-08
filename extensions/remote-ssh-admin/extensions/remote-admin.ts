@@ -709,19 +709,18 @@ function base64WriteCommand(remotePath: string, content: Buffer): string {
 	const tag = randomToken("__PI_REMOTE_ADMIN_FILE_B64");
 	return [
 		`p=${shQuote(remotePath)}`,
+		`if [ -e "$p" ] && [ ! -f "$p" ]; then echo "not a regular file: $p"; exit 1; fi`,
 		`dir=${"${p%/*}"}`,
 		`base=${"${p##*/}"}`,
 		`if [ "$dir" = "$p" ]; then dir=.; fi`,
 		`mkdir -p "$dir" || exit $?`,
 		`tmp=$(mktemp "$dir/.$base.tmp.XXXXXX") || exit $?`,
-		`trap 'rm -f "$tmp" "$tmp.b64"' EXIT HUP INT TERM`,
-		`cat > "$tmp.b64" <<'${tag}'`,
+		`trap 'rm -f "$tmp"' EXIT HUP INT TERM`,
+		`base64 -d > "$tmp" <<'${tag}' || exit $?`,
 		b64,
 		tag,
-		`base64 -d < "$tmp.b64" > "$tmp" || exit $?`,
-		`rm -f "$tmp.b64"`,
-		`mv "$tmp" "$p" || exit $?`,
-		`trap - EXIT HUP INT TERM`,
+		// Write through the existing inode: retain ownership/mode and follow symlinks.
+		`cat "$tmp" > "$p"`,
 	].join("\n");
 }
 
@@ -997,7 +996,7 @@ async function promptMaskedPassword(ctx: ExtensionCommandContext | ExtensionCont
 async function checkRemoteRequirements(transport: SshShellTransport): Promise<void> {
 	const result = await transport.run(
 		[
-			"for bin in mv mkdir rm mktemp base64 wc tr; do command -v \"$bin\" >/dev/null || exit 127; done",
+			"for bin in cat mkdir rm mktemp base64 wc tr; do command -v \"$bin\" >/dev/null || exit 127; done",
 			"printf eA== | base64 -d >/dev/null || exit 127",
 		].join("\n"),
 		{ maxOutputBytes: 4096 },
@@ -1089,7 +1088,7 @@ export default function (pi: ExtensionAPI) {
 	let remoteState: RemoteState | null = null;
 
 	const requireRemote = (): RemoteState => {
-		if (!remoteState) throw new Error("pi-remote-ssh-admin is not active; pass --ssh");
+		if (!remoteState) throw new Error("Remote SSH is not connected. Fix the connection and /reload before retrying.");
 		return remoteState;
 	};
 
@@ -1262,7 +1261,18 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("user_bash", () => {
-		if (!remoteState) return;
+		if (!pi.getFlag("ssh")) return;
+		if (!remoteState) {
+			// Return a failed result; throwing in an event handler can allow local fallback.
+			return {
+				result: {
+					output: "Remote SSH is not connected; command was not run. Fix the connection and /reload before retrying.",
+					exitCode: 1,
+					cancelled: false,
+					truncated: false,
+				},
+			};
+		}
 		return { operations: createRemoteBashOps(remoteState.context) };
 	});
 

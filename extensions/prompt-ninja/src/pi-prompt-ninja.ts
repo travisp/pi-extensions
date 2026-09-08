@@ -11,9 +11,7 @@ import {
 import { getKeybindings, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import {
 	allSkillsCell,
-	configColumnForScope,
 	configForScope,
-	EDITABLE_SCOPES,
 	loadConfigColumns,
 	sectionCell,
 	setAllSkillsCell,
@@ -104,22 +102,21 @@ let latestAppendScope: SettingsScope | undefined;
 export default function promptSections(pi: ExtensionAPI) {
 	pi.registerCommand("prompt-ninja", {
 		description: "Configure generated system prompt sections and skill visibility",
-		handler: async (_args, ctx) => {
-			await showSettings(ctx, pi);
-		},
+		handler: (_args, ctx) => showSettings(ctx, pi),
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", (_event, ctx) => {
 		sessionConfig = readSessionConfig(ctx.sessionManager.getBranch());
 	});
 
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", (event, ctx) => {
+		const { cwd, appendSystemPrompt, skills = [] } = event.systemPromptOptions;
+		const projectTrusted = ctx.isProjectTrusted();
 		latestBaseSystemPrompt = event.systemPrompt;
-		latestAppendSystemPrompt = event.systemPromptOptions.appendSystemPrompt;
-		latestAppendScope = detectAppendScope(event.systemPromptOptions.cwd, latestAppendSystemPrompt);
+		latestAppendSystemPrompt = appendSystemPrompt;
+		latestAppendScope = detectAppendScope(cwd, appendSystemPrompt, projectTrusted);
 
-		const columns = loadConfigColumns(event.systemPromptOptions.cwd, sessionConfig);
-		const skills = event.systemPromptOptions.skills ?? [];
+		const columns = loadConfigColumns(cwd, sessionConfig, projectTrusted);
 		const nextSystemPrompt = effectiveSystemPrompt(event.systemPrompt, latestAppendSystemPrompt, columns, skills);
 
 		return nextSystemPrompt === event.systemPrompt ? undefined : { systemPrompt: nextSystemPrompt };
@@ -128,13 +125,17 @@ export default function promptSections(pi: ExtensionAPI) {
 
 function splitSystemPrompt(systemPrompt: string, appendSystemPrompt?: string): PromptSection[] {
 	const markers: SectionMarker[] = [];
-	addMarker(markers, systemPrompt, "tools", ["# Tools\n", "## Tools\n", "Available tools:"]);
-	addMarker(markers, systemPrompt, "guidelines", "Guidelines:");
-	addMarker(markers, systemPrompt, "piDocumentation", "Pi documentation");
 	if (appendSystemPrompt) addMarker(markers, systemPrompt, "appendSection", appendSystemPrompt);
-	addMarker(markers, systemPrompt, "projectContext", "# Project Context");
+	addMarker(markers, systemPrompt, "projectContext", "<project_context>");
 	addMarker(markers, systemPrompt, "skills", "The following skills provide specialized instructions for specific tasks.");
-	addRuntimeContextMarker(markers, systemPrompt);
+	const runtimeStart = systemPrompt.lastIndexOf("\nCurrent working directory: ");
+	if (runtimeStart !== -1) markers.push({ name: "runtimeContext", start: runtimeStart + 1 });
+
+	// Headings inside appended or project instructions are not built-in sections.
+	const basePrompt = systemPrompt.slice(0, Math.min(systemPrompt.length, ...markers.map((marker) => marker.start)));
+	addMarker(markers, basePrompt, "tools", "Available tools:");
+	addMarker(markers, basePrompt, "guidelines", "Guidelines:");
+	addMarker(markers, basePrompt, "piDocumentation", "Pi documentation");
 
 	markers.sort((a, b) => a.start - b.start);
 	if (markers[0]?.start !== 0) markers.unshift({ name: "intro", start: 0 });
@@ -150,21 +151,15 @@ function splitSystemPrompt(systemPrompt: string, appendSystemPrompt?: string): P
 	}).filter((section) => section.text.trim().length > 0);
 }
 
-function addMarker(markers: SectionMarker[], text: string, name: PromptSectionName, marker: string | string[]): void {
-	const candidates = Array.isArray(marker) ? marker : [marker];
-	const starts = candidates.map((candidate) => sectionStart(text, candidate)).filter((start) => start !== -1);
-	if (starts.length > 0) markers.push({ name, start: Math.min(...starts) });
+function addMarker(markers: SectionMarker[], text: string, name: PromptSectionName, marker: string): void {
+	const start = sectionStart(text, marker);
+	if (start !== -1) markers.push({ name, start });
 }
 
 function sectionStart(text: string, marker: string): number {
 	if (text.startsWith(marker)) return 0;
 	const index = text.indexOf(`\n\n${marker}`);
 	return index === -1 ? -1 : index + 2;
-}
-
-function addRuntimeContextMarker(markers: SectionMarker[], text: string): void {
-	const match = text.match(/\nCurrent date: .*\nCurrent working directory: .*$/);
-	if (match?.index !== undefined) markers.push({ name: "runtimeContext", start: match.index + 1 });
 }
 
 function removeDisabledSections(systemPrompt: string, sections: PromptSection[], settings: SectionSettings): string {
@@ -195,13 +190,14 @@ function filterSkillsInPrompt(systemPrompt: string, skills: Skill[], allowedSkil
 
 async function showSettings(ctx: ExtensionCommandContext, pi: Pick<ExtensionAPI, "appendEntry">): Promise<void> {
 	const { cwd, appendSystemPrompt, skills = [] } = ctx.getSystemPromptOptions();
+	const projectTrusted = ctx.isProjectTrusted();
 	latestAppendSystemPrompt = appendSystemPrompt;
-	latestAppendScope = detectAppendScope(cwd, appendSystemPrompt);
+	latestAppendScope = detectAppendScope(cwd, appendSystemPrompt, projectTrusted);
 
 	if (!latestBaseSystemPrompt) latestBaseSystemPrompt = ctx.getSystemPrompt();
 	const basePrompt = latestBaseSystemPrompt;
 
-	const columns = loadConfigColumns(cwd, sessionConfig);
+	const columns = loadConfigColumns(cwd, sessionConfig, projectTrusted);
 	const saveScope = (scope: SettingsScope) => saveScopedConfig(scope, cwd, configForScope(columns, scope), pi);
 
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
@@ -467,7 +463,8 @@ function createMatrix(rows: MatrixRow[], options: MatrixOptions): Component {
 	function toggleSelectedCell(scope: SettingsScope): void {
 		const row = selected();
 		if (!row?.setCell || !row.cell) return;
-		row.setCell(scope, nextCellState(row.cell(configColumnForScope(options.columns, scope))));
+		const column = options.columns.find((column) => column.editableScope === scope);
+		if (column) row.setCell(scope, nextCellState(row.cell(column)));
 	}
 
 	function handleSearchInput(data: string): void {
@@ -778,8 +775,8 @@ function configurableSkills(skills: Skill[]): Skill[] {
 }
 
 function resetAllSettings(columns: ConfigColumn[], saveScope: (scope: SettingsScope) => void): void {
-	for (const scope of EDITABLE_SCOPES) {
-		const config = configForScope(columns, scope);
+	for (const { editableScope: scope, config } of columns) {
+		if (!scope) continue;
 		delete config.sections;
 		delete config.skills;
 		saveScope(scope);
@@ -787,8 +784,9 @@ function resetAllSettings(columns: ConfigColumn[], saveScope: (scope: SettingsSc
 }
 
 function resetSkillSettings(columns: ConfigColumn[], saveScope: (scope: SettingsScope) => void): void {
-	for (const scope of EDITABLE_SCOPES) {
-		delete configForScope(columns, scope).skills;
+	for (const { editableScope: scope, config } of columns) {
+		if (!scope) continue;
+		delete config.skills;
 		saveScope(scope);
 	}
 }
@@ -821,9 +819,9 @@ function isSessionSettingsEntry(entry: unknown): entry is { type: "custom"; cust
 	return isObject(entry) && entry.type === "custom" && entry.customType === SESSION_SETTINGS_ENTRY_TYPE && isObject(entry.data);
 }
 
-function detectAppendScope(cwd: string, appendSystemPrompt: string | undefined): SettingsScope | undefined {
+function detectAppendScope(cwd: string, appendSystemPrompt: string | undefined, projectTrusted: boolean): SettingsScope | undefined {
 	if (!appendSystemPrompt) return undefined;
-	if (existsSync(directoryAppendPath(cwd))) return "directory";
+	if (projectTrusted && existsSync(directoryAppendPath(cwd))) return "directory";
 	if (existsSync(globalAppendPath())) return "global";
 	return undefined;
 }

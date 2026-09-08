@@ -1,22 +1,10 @@
 #!/usr/bin/env node
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import assert from 'node:assert/strict';
+import { chmodSync, existsSync, linkSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-
-function getPiCodingAgentRoot() {
-  const root = resolve(process.env.PI_CODING_AGENT_ROOT ?? 'node_modules/@earendil-works/pi-coding-agent');
-  if (!existsSync(join(root, 'dist/core/extensions/loader.js'))) {
-    throw new Error('Missing @earendil-works/pi-coding-agent. Run npm install --include=peer, or set PI_CODING_AGENT_ROOT.');
-  }
-  return root;
-}
-
-const piCodingAgentRoot = getPiCodingAgentRoot();
-const importPiInternal = (relativePath) => import(pathToFileURL(join(piCodingAgentRoot, relativePath)).href);
-const { discoverAndLoadExtensions } = await importPiInternal('dist/core/extensions/loader.js');
-const { ExtensionRunner } = await importPiInternal('dist/core/extensions/runner.js');
-const { visibleWidth } = await import('@earendil-works/pi-tui');
+import { discoverAndLoadExtensions, ExtensionRunner } from '@earendil-works/pi-coding-agent';
+import { visibleWidth } from '@earendil-works/pi-tui';
 
 const tmp = mkdtempSync(join(tmpdir(), 'pi-remote-ssh-admin-smoke-'));
 const remoteCwd = join(tmp, 'remote');
@@ -148,11 +136,11 @@ function makeUi(password) {
     custom: async (factory) => {
       let result;
       const component = factory({ requestRender: () => {} }, {}, keybindings, (value) => { result = value; });
-      for (const char of password) component.handleInput?.(`\x1b[${char.codePointAt(0)}u`);
+      for (const char of password) component.handleInput(`\x1b[${char.codePointAt(0)}u`);
       for (const line of component.render(16)) {
         if (visibleWidth(line) > 16) throw new Error('custom UI line exceeds 16 columns');
       }
-      component.handleInput?.('\x1b[13u');
+      component.handleInput('\x1b[13u');
       return result;
     },
     pasteToEditor: () => {},
@@ -172,7 +160,8 @@ function makeUi(password) {
 }
 
 try {
-  const result = await discoverAndLoadExtensions(['.'], process.cwd());
+  const result = await discoverAndLoadExtensions([resolve('extensions/remote-admin.ts')], tmp, join(tmp, 'agent'));
+  assert.deepEqual(result.errors, []);
   result.runtime.flagValues.set('ssh', `fake:${remoteCwd}`);
   result.runtime.flagValues.set('use-password', true);
   const ext = result.extensions.find((e) => e.path.includes('remote-admin'));
@@ -217,6 +206,38 @@ try {
   const edited = await read.execute('read2', { path: 'round.txt' }, undefined, undefined, ctx);
   if (edited.content[0].text !== 'hello\nremote\n') throw new Error('edit output mismatch');
 
+  const executable = join(remoteCwd, "script with 'quote.sh");
+  writeFileSync(executable, 'before\n', { mode: 0o751 });
+  const alias = join(remoteCwd, 'script-link');
+  symlinkSync("script with 'quote.sh", alias);
+  const hardLink = join(remoteCwd, 'script-hard-link');
+  linkSync(executable, hardLink);
+  const metadata = (path) => {
+    const { mode, uid, gid, ino } = statSync(path);
+    return { mode, uid, gid, ino };
+  };
+  const before = metadata(executable);
+  await write.execute('write-executable', { path: executable, content: 'written\n' }, undefined, undefined, ctx);
+  assert.deepEqual(metadata(executable), before);
+  await edit.execute('edit-link', { path: alias, edits: [{ oldText: 'written', newText: 'edited' }] }, undefined, undefined, ctx);
+  assert.ok(lstatSync(alias).isSymbolicLink());
+  assert.deepEqual(metadata(alias), before);
+  assert.equal(readFileSync(executable, 'utf8'), 'edited\n');
+  assert.equal(readFileSync(hardLink, 'utf8'), 'edited\n');
+  await assert.rejects(write.execute('write-directory', { path: remoteCwd, content: 'no' }, undefined, undefined, ctx), /not a regular file/);
+
+  // A failed final copy must report failure and still clean up its temporary file.
+  const brokenLink = join(remoteCwd, 'broken-link');
+  symlinkSync('missing-directory/target', brokenLink);
+  await assert.rejects(write.execute('write-broken-link', { path: brokenLink, content: 'no' }, undefined, undefined, ctx), /failed/);
+  assert.ok(lstatSync(brokenLink).isSymbolicLink());
+  assert.ok(!readdirSync(remoteCwd).some((name) => name.includes('.tmp.')));
+
+  const userBash = await runner.emitUserBash({ type: 'user_bash', command: 'printf remote', cwd: process.cwd(), excludeFromContext: false });
+  const output = [];
+  assert.deepEqual(await userBash.operations.exec('printf remote', process.cwd(), { onData: (data) => output.push(data) }), { exitCode: 0 });
+  assert.equal(Buffer.concat(output).toString(), 'remote');
+
   const elevate = runner.getToolDefinition('remote_admin_elevate');
   await elevate.execute('elevate-1', {}, undefined, undefined, ctx);
   const moshiRequestFile = `${moshiEventsFile}.request`;
@@ -233,11 +254,31 @@ try {
     throw new Error('Moshi permission resolution mismatch');
   }
 
-  await runner.emit({ type: 'session_shutdown' });
+  await write.execute('elevated-write', { path: alias, content: 'elevated\n' }, undefined, undefined, ctx);
+  assert.ok(lstatSync(alias).isSymbolicLink());
+  assert.deepEqual(metadata(executable), before);
+  assert.equal(readFileSync(hardLink, 'utf8'), 'elevated\n');
+  await runner.emit({ type: 'session_shutdown', reason: 'reload' });
 
   const sshCount = readFileSync(countFile, 'utf8').trim();
   if (sshCount !== '2') throw new Error(`expected normal and elevated SSH processes, got ${sshCount}`);
-  console.log('fake SSH smoke passed');
+
+  // Authentication failure must intercept both ! and !! rather than run locally.
+  runner.setUIContext(makeUi('wrong-password'));
+  await runner.emit({ type: 'session_start', reason: 'reload' });
+  for (const excludeFromContext of [false, true]) {
+    const blocked = await runner.emitUserBash({ type: 'user_bash', command: 'touch must-not-run-locally', cwd: tmp, excludeFromContext });
+    assert.equal(blocked.result.exitCode, 1);
+    assert.match(blocked.result.output, /command was not run/);
+    assert.equal(blocked.operations, undefined);
+  }
+  await assert.rejects(bash.execute('disconnected', { command: 'touch must-not-run-locally' }, undefined, undefined, ctx), /not connected/);
+  assert.equal(existsSync(join(tmp, 'must-not-run-locally')), false);
+  await runner.emit({ type: 'session_shutdown', reason: 'quit' });
+
+  result.runtime.flagValues.delete('ssh');
+  assert.equal(await runner.emitUserBash({ type: 'user_bash', command: 'printf local', cwd: tmp, excludeFromContext: false }), undefined);
+  console.log('fake SSH smoke passed (routing, failed authentication, file metadata, symlinks, and elevation)');
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
