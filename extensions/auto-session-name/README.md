@@ -5,8 +5,10 @@ Tiny Pi extension that names a new unnamed session from its first user message.
 It uses Pi's OpenAI Codex subscription provider directly:
 
 ```text
-openai-codex/gpt-5.4-mini
+openai-codex/gpt-5.6-luna
 ```
+
+Title generation uses low reasoning effort.
 
 ## Run locally
 

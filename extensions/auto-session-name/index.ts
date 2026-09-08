@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const MODEL_PROVIDER = "openai-codex";
-const MODEL_ID = "gpt-5.4-mini";
+const MODEL_ID = "gpt-5.6-luna";
 const MAX_NAME_CHARS = 60;
 
 const SYSTEM_PROMPT = `Create a concise, searchable title for this Pi coding session.
@@ -67,7 +67,7 @@ async function generateName(
 				},
 			],
 		},
-		{ maxTokens: 64 },
+		{ reasoningEffort: "low" },
 	);
 
 	if (response.stopReason === "error") throw new Error(response.errorMessage);
