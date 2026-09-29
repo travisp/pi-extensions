@@ -28,6 +28,8 @@ import {
 	type SkillSettings,
 } from "./prompt-config.js";
 
+import { inspectPrompt, type PromptOptions, type PromptSection } from "./prompt-structure.js";
+
 type MatrixRow = {
 	id: string;
 	label: string;
@@ -50,16 +52,6 @@ type MatrixOptions = {
 	reset: () => void;
 	search?: boolean;
 	fixedHeight?: () => number;
-};
-
-type SectionMarker = {
-	name: PromptSectionName;
-	start: number;
-};
-
-type PromptSection = SectionMarker & {
-	end: number;
-	text: string;
 };
 
 const PROMPT_SECTION_DEFINITIONS: Array<{ name: PromptSectionName; label: string; description: string }> = [
@@ -98,6 +90,11 @@ let sessionConfig: PromptSectionsConfig = {};
 let latestBaseSystemPrompt: string | undefined;
 let latestAppendSystemPrompt: string | undefined;
 let latestAppendScope: SettingsScope | undefined;
+let latestPromptOptions: PromptOptions;
+let filteringUnavailable = false;
+let warnedThisSession = false;
+
+const FILTERING_WARNING = "Prompt Ninja: filtering unavailable for this prompt structure or forced prompt; prompt left unchanged.";
 
 export default function promptSections(pi: ExtensionAPI) {
 	pi.registerCommand("prompt-ninja", {
@@ -107,71 +104,77 @@ export default function promptSections(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		sessionConfig = readSessionConfig(ctx.sessionManager.getBranch());
+		warnedThisSession = false;
+		latestBaseSystemPrompt = undefined;
+		filteringUnavailable = false;
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
-		const { cwd, appendSystemPrompt, skills = [] } = event.systemPromptOptions;
+		const options = event.systemPromptOptions;
+		const { cwd, appendSystemPrompt, skills } = options;
 		const projectTrusted = ctx.isProjectTrusted();
 		latestBaseSystemPrompt = event.systemPrompt;
+		latestPromptOptions = structuredClone(options);
 		latestAppendSystemPrompt = appendSystemPrompt;
 		latestAppendScope = detectAppendScope(cwd, appendSystemPrompt, projectTrusted);
 
+		const warn = () => {
+			filteringUnavailable = true;
+			if (!warnedThisSession) {
+				ctx.ui.notify(FILTERING_WARNING, "warning");
+				warnedThisSession = true;
+			}
+		};
+		if (!inspectPrompt(event.systemPrompt, options)) {
+			warn();
+			return;
+		}
+		filteringUnavailable = false;
 		const columns = loadConfigColumns(cwd, sessionConfig, projectTrusted);
-		const nextSystemPrompt = effectiveSystemPrompt(event.systemPrompt, latestAppendSystemPrompt, columns, skills);
+		const settings = resolvedSections(columns);
+		const allowed = effectiveAllowedSkillNames(columns, skills);
+		if (settings.skills && options.sections.skills && configurableSkills(skills).some((skill) => !allowed.has(skill.name))) {
+			// A custom skills section is opaque; changing the skill list would not change it.
+			warn();
+			return;
+		}
 
-		return nextSystemPrompt === event.systemPrompt ? undefined : { systemPrompt: nextSystemPrompt };
+		// Pi rebuilds these structured inputs and records section deltas.
+		if (!settings.appendSection) options.appendSystemPrompt = "";
+		if (!settings.projectContext) options.contextFiles = [];
+		options.skills = settings.skills ? skills.filter((skill) => allowed.has(skill.name) || skill.disableModelInvocation) : [];
+		for (const [tag, name] of [["addendum", "appendSection"], ["project_context", "projectContext"], ["skills", "skills"]] as const) {
+			if (!settings[name]) delete options.sections[tag];
+		}
+
+		// The live getter includes our mutations. Unsupported built-in toggles
+		// require a text override; tool availability is never changed.
+		const rebuilt = event.systemPrompt;
+		const sections = inspectPrompt(rebuilt, options);
+		if (!sections) {
+			Object.assign(options, structuredClone(latestPromptOptions));
+			warn();
+			return;
+		}
+		const next = removeDisabledSections(rebuilt, sections, settings);
+		return next === rebuilt ? undefined : { systemPrompt: next };
 	});
 }
 
-function splitSystemPrompt(systemPrompt: string, appendSystemPrompt?: string): PromptSection[] {
-	const markers: SectionMarker[] = [];
-	if (appendSystemPrompt) addMarker(markers, systemPrompt, "appendSection", appendSystemPrompt);
-	addMarker(markers, systemPrompt, "projectContext", "<project_context>");
-	addMarker(markers, systemPrompt, "skills", "The following skills provide specialized instructions for specific tasks.");
-	const runtimeStart = systemPrompt.lastIndexOf("\nCurrent working directory: ");
-	if (runtimeStart !== -1) markers.push({ name: "runtimeContext", start: runtimeStart + 1 });
-
-	// Headings inside appended or project instructions are not built-in sections.
-	const basePrompt = systemPrompt.slice(0, Math.min(systemPrompt.length, ...markers.map((marker) => marker.start)));
-	addMarker(markers, basePrompt, "tools", "Available tools:");
-	addMarker(markers, basePrompt, "guidelines", "Guidelines:");
-	addMarker(markers, basePrompt, "piDocumentation", "Pi documentation");
-
-	markers.sort((a, b) => a.start - b.start);
-	if (markers[0]?.start !== 0) markers.unshift({ name: "intro", start: 0 });
-
-	return markers.map((marker, index) => {
-		const end = markers[index + 1]?.start ?? systemPrompt.length;
-		return {
-			name: marker.name,
-			start: marker.start,
-			end,
-			text: systemPrompt.slice(marker.start, end),
-		};
-	}).filter((section) => section.text.trim().length > 0);
-}
-
-function addMarker(markers: SectionMarker[], text: string, name: PromptSectionName, marker: string): void {
-	const start = sectionStart(text, marker);
-	if (start !== -1) markers.push({ name, start });
-}
-
-function sectionStart(text: string, marker: string): number {
-	if (text.startsWith(marker)) return 0;
-	const index = text.indexOf(`\n\n${marker}`);
-	return index === -1 ? -1 : index + 2;
+function splitSystemPrompt(systemPrompt: string, _appendSystemPrompt?: string): PromptSection[] {
+	return inspectPrompt(systemPrompt, latestPromptOptions) ?? [];
 }
 
 function removeDisabledSections(systemPrompt: string, sections: PromptSection[], settings: SectionSettings): string {
-	let nextPrompt = systemPrompt;
-	for (const section of [...sections].reverse()) {
-		if (!settings[section.name]) nextPrompt = removePromptRange(nextPrompt, section.start, section.end);
+	let cursor = 0;
+	const parts: string[] = [];
+	for (const section of sections) {
+		if (section.name === "custom" || settings[section.name]) continue;
+		parts.push(systemPrompt.slice(cursor, section.start));
+		cursor = section.end;
 	}
-	return nextPrompt;
-}
-
-function removePromptRange(systemPrompt: string, start: number, end: number): string {
-	return [systemPrompt.slice(0, start).trimEnd(), systemPrompt.slice(end).trimStart()].filter(Boolean).join("\n\n");
+	parts.push(systemPrompt.slice(cursor));
+	return parts.join("");
 }
 
 function promptSectionText(name: PromptSectionName): string | undefined {
@@ -179,39 +182,52 @@ function promptSectionText(name: PromptSectionName): string | undefined {
 	return splitSystemPrompt(latestBaseSystemPrompt, latestAppendSystemPrompt).find((section) => section.name === name)?.text;
 }
 
-function filterSkillsInPrompt(systemPrompt: string, skills: Skill[], allowedSkills: Set<string>): string {
-	const currentSkillBlock = formatSkillsForPrompt(skills);
-	if (!currentSkillBlock) return systemPrompt;
-	if (allowedSkills.size === 0) return systemPrompt.replace(currentSkillBlock, "");
-
-	const nextSkillBlock = formatSkillsForPrompt(configurableSkills(skills).filter((skill) => allowedSkills.has(skill.name)));
-	return systemPrompt.replace(currentSkillBlock, nextSkillBlock);
+function filterSkillSection(text: string, skills: Skill[], allowedSkills: Set<string>): string {
+	if (configurableSkills(skills).every((skill) => allowedSkills.has(skill.name))) return text;
+	const tools = latestPromptOptions.selectedTools ?? ["read", "bash", "edit", "write"];
+	const readTool = tools.includes("read") ? "read" : "bash";
+	const body = formatSkillsForPrompt(skills.filter((skill) => allowedSkills.has(skill.name)), readTool).trim();
+	return body ? `<skills>\n${body}\n</skills>` : "";
 }
 
 async function showSettings(ctx: ExtensionCommandContext, pi: Pick<ExtensionAPI, "appendEntry">): Promise<void> {
-	const { cwd, appendSystemPrompt, skills = [] } = ctx.getSystemPromptOptions();
+	latestPromptOptions = structuredClone(ctx.getSystemPromptOptions());
+	const { cwd, appendSystemPrompt, skills = [] } = latestPromptOptions;
 	const projectTrusted = ctx.isProjectTrusted();
 	latestAppendSystemPrompt = appendSystemPrompt;
 	latestAppendScope = detectAppendScope(cwd, appendSystemPrompt, projectTrusted);
 
-	if (!latestBaseSystemPrompt) latestBaseSystemPrompt = ctx.getSystemPrompt();
+	latestBaseSystemPrompt = ctx.getSystemPrompt();
 	const basePrompt = latestBaseSystemPrompt;
-
 	const columns = loadConfigColumns(cwd, sessionConfig, projectTrusted);
+	filteringUnavailable = !inspectPrompt(basePrompt, latestPromptOptions) || Boolean(
+		latestPromptOptions.sections?.skills && resolveSection(columns, "skills") &&
+		configurableSkills(skills).some((skill) => !effectiveSkillEnabled(columns, skill.name)),
+	);
 	const saveScope = (scope: SettingsScope) => saveScopedConfig(scope, cwd, configForScope(columns, scope), pi);
 
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
 		const matrixHeight = () => Math.max(8, Math.min(SETTINGS_MATRIX_FIXED_LINES, tui.terminal.rows - 4));
 		const fullPageSize = () => Math.max(8, tui.terminal.rows - 4);
 		const rows = mainRows(basePrompt, skills, columns, saveScope, theme, matrixHeight, fullPageSize);
-		return createMatrix(rows, {
-			title: "Prompt sections",
+		const matrix = createMatrix(rows, {
+			get title() { return filteringUnavailable ? "Prompt sections — filtering unavailable; prompt unchanged" : "Prompt sections"; },
 			theme,
 			columns,
 			reset: () => resetAllSettings(columns, saveScope),
 			done: () => done(undefined),
 			fixedHeight: matrixHeight,
 		});
+		return {
+			...matrix,
+			render: (width) => {
+				filteringUnavailable = !inspectPrompt(basePrompt, latestPromptOptions) || Boolean(
+					latestPromptOptions.sections?.skills && resolveSection(columns, "skills") &&
+					configurableSkills(skills).some((skill) => !effectiveSkillEnabled(columns, skill.name)),
+				);
+				return matrix.render(width);
+			},
+		};
 	});
 }
 
@@ -230,7 +246,7 @@ function mainRows(
 		label: "Skill invocations in prompt",
 		description: "Enter opens individual skills.",
 		preview: () => promptSectionText("skills") ?? formatSkillsForPrompt(configurableSkills(skills)),
-		effective: () => skillsSummary(skills, effectiveAllowedSkillNames(columns, skills)),
+		effective: () => filteringUnavailable ? "unavailable" : skillsSummary(skills, effectiveAllowedSkillNames(columns, skills)),
 		cellText: (column) => skillScopeSummaryForSkills(column.config, configurableSkills(skills)),
 		open: (done) => createSkillsMatrix(skills, columns, saveScope, done, theme, matrixHeight),
 	};
@@ -264,7 +280,7 @@ function promptSectionRows(columns: ConfigColumn[], saveScope: (scope: SettingsS
 		label: section.label,
 		description: section.description,
 		preview: () => promptSectionText(section.name) ?? "",
-		effective: () => section.name === "appendSection" ? appendEffective(columns) : onOff(resolveSection(columns, section.name)),
+		effective: () => filteringUnavailable ? "unavailable" : section.name === "appendSection" ? appendEffective(columns) : onOff(resolveSection(columns, section.name)),
 		cell: (column) => sectionCell(column.config, section.name),
 		cellText: section.name === "appendSection" ? (column) => appendCellText(column, sectionCell(column.config, section.name)) : undefined,
 		setCell: (scope, state) => {
@@ -289,7 +305,7 @@ function createSkillsMatrix(
 			label: group.label,
 			description: group.description,
 			preview: () => formatSkillsForPrompt(group.skills),
-			effective: () => skillsSummary(group.skills, effectiveAllowedSkillNames(columns, skills)),
+			effective: () => filteringUnavailable ? "unavailable" : skillsSummary(group.skills, effectiveAllowedSkillNames(columns, skills)),
 			cellText: (column) => skillScopeSummaryForSkills(column.config, group.skills),
 		},
 		...group.skills.map((skill): MatrixRow => ({
@@ -297,7 +313,7 @@ function createSkillsMatrix(
 			label: `  ${skill.name}`,
 			description: skill.description,
 			preview: () => skillPromptBlock(skill),
-			effective: () => onOff(effectiveSkillEnabled(columns, skill.name)),
+			effective: () => filteringUnavailable ? "unavailable" : onOff(effectiveSkillEnabled(columns, skill.name)),
 			cell: (column) => skillCell(column.config, skill.name),
 			setCell: (scope, state) => {
 				setSkillCell(configForScope(columns, scope), skill.name, state);
@@ -311,7 +327,7 @@ function createSkillsMatrix(
 			label: "All skills",
 			description: "Press s, d, or g to toggle all skills at that scope.",
 			preview: () => promptSectionText("skills") ?? formatSkillsForPrompt(availableSkills),
-			effective: () => skillsSummary(skills, effectiveAllowedSkillNames(columns, skills)),
+			effective: () => filteringUnavailable ? "unavailable" : skillsSummary(skills, effectiveAllowedSkillNames(columns, skills)),
 			cell: (column) => allSkillsCell(column.config),
 			setCell: (scope, state) => {
 				setAllSkillsCell(configForScope(columns, scope), state);
@@ -557,6 +573,7 @@ function renderPreview(lines: string[], row: MatrixRow, width: number, theme: Th
 }
 
 function fullSystemPromptPreviewLines(basePrompt: string, appendSystemPrompt: string | undefined, columns: ConfigColumn[], skills: Skill[], width: number): string[] {
+	if (filteringUnavailable) return plainPreviewLines(basePrompt, width);
 	const sections = splitSystemPrompt(basePrompt, appendSystemPrompt);
 	const allowedSkills = effectiveAllowedSkillNames(columns, skills);
 	const allSkillsDisabled = configurableSkills(skills).length > 0 && allowedSkills.size === 0;
@@ -573,8 +590,19 @@ function enabledSystemPromptPreviewLines(basePrompt: string, appendSystemPrompt:
 }
 
 function effectiveSystemPrompt(basePrompt: string, appendSystemPrompt: string | undefined, columns: ConfigColumn[], skills: Skill[]): string {
-	const promptWithSectionsRemoved = removeDisabledSections(basePrompt, splitSystemPrompt(basePrompt, appendSystemPrompt), resolvedSections(columns));
-	return filterSkillsInPrompt(promptWithSectionsRemoved, skills, effectiveAllowedSkillNames(columns, skills));
+	if (filteringUnavailable) return basePrompt;
+		let cursor = 0;
+	const parts: string[] = [];
+	for (const section of splitSystemPrompt(basePrompt, appendSystemPrompt)) {
+		parts.push(basePrompt.slice(cursor, section.start));
+		if (section.name === "custom" || resolveSection(columns, section.name)) {
+			parts.push(section.name === "skills"
+				? filterSkillSection(section.text, skills, effectiveAllowedSkillNames(columns, skills)) : section.text);
+		}
+		cursor = section.end;
+	}
+	parts.push(basePrompt.slice(cursor));
+	return parts.join("");
 }
 
 function promptLinesWithOffsets(text: string): Array<{ text: string; start: number }> {
@@ -598,7 +626,7 @@ function previewLabel(
 	skillBlocks: Array<{ start: number; end: number; label: string }>,
 	allSkillsDisabled: boolean,
 ): string {
-	if (!section) return "Prompt";
+	if (!section || section.name === "custom") return "Prompt";
 	if (section.name === "skills") {
 		if (!resolveSection(columns, "skills") || allSkillsDisabled) return "S:Skills [disabled]";
 		return skillBlocks.find((block) => offset >= block.start && offset < block.end)?.label ?? "S:Skills";
@@ -611,7 +639,8 @@ function skillPromptBlocks(section: PromptSection | undefined, allowedSkills: Se
 	if (!section) return [];
 	const blocks: Array<{ start: number; end: number; label: string }> = [];
 	for (const match of section.text.matchAll(SKILL_BLOCK_PATTERN)) {
-		const skillName = match[0].match(/<name>(.*?)<\/name>/)![1];
+		const skillName = match[0].match(/<name>(.*?)<\/name>/)?.[1];
+		if (!skillName) continue;
 		const start = section.start + match.index!;
 		blocks.push({
 			start,
