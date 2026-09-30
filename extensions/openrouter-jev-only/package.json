@@ -1,0 +1,15 @@
+{
+  "name": "pi-openrouter-jev-only",
+  "version": "0.1.0",
+  "description": "Expose only Jev classifiers in Pi's OpenRouter model catalog.",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.99.1",
+    "@earendil-works/pi-coding-agent": ">=0.99.1"
+  }
+}
