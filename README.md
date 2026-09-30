@@ -16,6 +16,7 @@ Some of these are more developed than others. Extensions published to the npm re
 - [`system-prompt-display`](extensions/system-prompt-display/) records the initial system prompt and later changes.
 - [`herdr-dev`](extensions/herdr-dev/) runs a project's development server in a dedicated Herdr tab.
 - [`codemode-collapse-fix`](extensions/codemode-collapse-fix/) temporarily bounds collapsed codemode previews by screen rows; included in the root package until upstream fixes #10222.
+- [`tool-context-usage`](extensions/tool-context-usage/) displays estimated context tokens per tool call, with a persistent on/off setting.
 - [`stream-output`](extensions/stream-output/) streams progress from explicitly configured Pi print-mode runs; it is intentionally not loaded by the root package.
 
 ## Usage
