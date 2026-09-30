@@ -1,0 +1,12 @@
+{
+  "name": "pi-openai-speed",
+  "version": "0.1.0",
+  "description": "Session-only OpenAI Fast and Ultrafast controls with a powerline icon.",
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

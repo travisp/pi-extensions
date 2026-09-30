@@ -10,6 +10,7 @@
       "./extensions/prompt-ninja/src/pi-prompt-ninja.ts",
       "./extensions/remote-ssh-admin/extensions/remote-admin.ts",
       "./extensions/auto-session-name/index.ts",
+      "./extensions/openai-speed/index.ts",
       "./extensions/slash-command-guard/index.ts",
       "./extensions/system-prompt-display/index.ts",
       "./extensions/herdr-dev/src/index.ts",

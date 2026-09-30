@@ -11,6 +11,7 @@ Some of these are more developed than others. Extensions published to the npm re
 - [`prompt-ninja`](extensions/prompt-ninja/) customizes and previews Pi system-prompt sections.
 - [`remote-ssh-admin`](extensions/remote-ssh-admin/) routes remote tools through persistent SSH transports with approved elevation.
 - [`auto-session-name`](extensions/auto-session-name/) names new sessions automatically.
+- [`openai-speed`](extensions/openai-speed/) controls OpenAI Fast/Ultrafast for the current session with a powerline icon.
 - [`slash-command-guard`](extensions/slash-command-guard/) (**npm:** [`@smallbatchcode/pi-slash-command-guard`](https://www.npmjs.com/package/@smallbatchcode/pi-slash-command-guard)) prevents mistyped or unknown slash commands from being sent as regular user messages. If there is a close known command, it includes a “Did you mean ...?” hint; otherwise it shows an unknown-command error.
 - [`system-prompt-display`](extensions/system-prompt-display/) records the initial system prompt and later changes.
 - [`herdr-dev`](extensions/herdr-dev/) runs a project's development server in a dedicated Herdr tab.
