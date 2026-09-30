@@ -24,8 +24,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("model_select", (_event, ctx) => updateStatus(ctx));
 
-	pi.registerCommand("fast", {
-		description: "Show or set OpenAI speed: /fast [on|off|ultrafast|status]",
+	pi.registerCommand("openai-speed", {
+		description: "Show or set OpenAI speed: /openai-speed [on|off|ultrafast|status]",
 		handler: async (args, ctx) => {
 			const command = args.trim().toLowerCase();
 			switch (command) {
@@ -40,7 +40,7 @@ export default function (pi: ExtensionAPI) {
 					mode = command;
 					break;
 				default:
-					ctx.ui.notify("Usage: /fast [on|off|ultrafast|status]", "error");
+					ctx.ui.notify("Usage: /openai-speed [on|off|ultrafast|status]", "error");
 					return;
 			}
 			updateStatus(ctx);

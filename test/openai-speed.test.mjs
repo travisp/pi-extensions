@@ -21,7 +21,7 @@ function setup(provider = "openai") {
 	openaiSpeed({
 		on: (name, handler) => handlers.set(name, handler),
 		registerCommand: (name, definition) => {
-			assert.equal(name, "fast");
+			assert.equal(name, "openai-speed");
 			command = definition.handler;
 		},
 	});
@@ -35,7 +35,7 @@ function setup(provider = "openai") {
 	};
 }
 
-test("explicit commands select icons; bare /fast and status do not change mode", async () => {
+test("explicit commands select icons; bare /openai-speed and status do not change mode", async () => {
 	const app = setup();
 	assert.equal(app.status, "dim:󰾆");
 	for (const [args, icon, mode] of [["on", "accent:", "fast"], ["ultrafast", "warning:", "ultrafast"], ["off", "dim:󰾆", "off"]]) {
