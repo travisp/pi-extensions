@@ -14,7 +14,7 @@ pi -e ./extensions/tool-context-usage/index.ts
 
 The root package loads this extension automatically. If it is already installed, use `/reload` rather than also loading it with `-e`.
 
-Keep your existing codemode-collapse-fix loaded. Estimates appear outside its bounded output.
+Pi 0.99.2+ bounds codemode previews natively; codemode-collapse-fix is no longer required.
 
 Use `/tool-context-usage` to show the current setting, `/tool-context-usage off` to hide estimates, and `/tool-context-usage on` to show them again. Changes apply immediately, including existing tool boxes. The setting defaults to on and persists globally in `~/.pi/agent/extensions/tool-context-usage.json` (under your configured Pi agent directory).
 
