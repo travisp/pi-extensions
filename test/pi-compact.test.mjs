@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
-import { Container } from "@earendil-works/pi-tui";
+import { discoverAndLoadExtensions, initTheme } from "@earendil-works/pi-coding-agent";
+import { Container, Spacer } from "@earendil-works/pi-tui";
 import compact from "../extensions/pi-compact/index.ts";
 
-const { InteractiveMode } = await import(new URL("./modes/interactive/interactive-mode.js", import.meta.resolve("@earendil-works/pi-coding-agent")));
+const agentUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
+const { InteractiveMode } = await import(new URL("./modes/interactive/interactive-mode.js", agentUrl));
+const { UserMessageComponent } = await import(new URL("./modes/interactive/components/user-message.js", agentUrl));
+const { AssistantMessageComponent } = await import(new URL("./modes/interactive/components/assistant-message.js", agentUrl));
+const { ToolExecutionComponent } = await import(new URL("./modes/interactive/components/tool-execution.js", agentUrl));
+initTheme();
 
 function fixture(mode = "tui") {
 	const handlers = new Map();
@@ -13,10 +18,15 @@ function fixture(mode = "tui") {
 	const above = new Container();
 	const below = new Container();
 	const unrelated = new Container();
+	const chat = new Container();
+	const document = new Container();
+	document.addChild(new Container());
+	document.addChild(new Container());
+	document.addChild(chat);
 	const widgets = new Map();
 	const notices = [];
 	let renders = 0;
-	const tui = { children: [unrelated, above, below], requestRender: () => renders++ };
+	const tui = { children: [document, unrelated, above, below], terminal: { rows: 50 }, requestRender: () => renders++ };
 	const rebuild = () => InteractiveMode.prototype.renderWidgetContainer.call({}, above, widgets, true, true);
 	const ctx = {
 		mode,
@@ -32,7 +42,7 @@ function fixture(mode = "tui") {
 		},
 	};
 	rebuild();
-	return { handlers, above, below, unrelated, widgets, notices, tui, ctx, rebuild, renders: () => renders };
+	return { handlers, above, below, unrelated, chat, document, widgets, notices, tui, ctx, rebuild, renders: () => renders };
 }
 
 const message = (text) => ({ render: () => [text], invalidate() {} });
@@ -87,6 +97,61 @@ test("patch follows the same container when renderers change", () => {
 	f.rebuild();
 	assert.ok(nextTui.children.includes(f.above));
 	assert.deepEqual(f.above.render(80), []);
+	f.handlers.get("session_shutdown")({}, f.ctx);
+});
+
+test("message and tool spacing follows the strict 40-row threshold and restores on unload", () => {
+	const f = fixture();
+	const user = new UserMessageComponent("first paragraph\n\nsecond paragraph");
+	const assistantMessage = { role: "assistant", content: [{ type: "text", text: "answer" }], stopReason: "stop" };
+	const assistant = new AssistantMessageComponent(assistantMessage);
+	const tool = new ToolExecutionComponent("custom", "call-1", {}, { showImages: false }, undefined, f.tui, "/tmp");
+	const boxedTool = new ToolExecutionComponent("custom", "call-2", {}, { showImages: false }, {}, f.tui, "/tmp");
+	f.chat.addChild(new Spacer(1));
+	f.chat.addChild(user);
+	f.chat.addChild(assistant);
+	f.chat.addChild(tool);
+	f.chat.addChild(boxedTool);
+	const originalRender = f.chat.render;
+	const original = f.chat.render(80);
+	f.handlers.get("session_start")({}, f.ctx);
+	f.tui.terminal.rows = 40;
+	assert.deepEqual(f.chat.render(80), original);
+	f.tui.terminal.rows = 39;
+	const compactRows = f.chat.render(80);
+	assert.ok(compactRows.length < original.length);
+	assert.equal(user.children[0].paddingY, 0);
+	assert.equal(tool.contentText.paddingY, 0);
+	assert.equal(boxedTool.contentBox.paddingY, 0);
+	assert.equal(assistant.contentContainer.children[0].lines, 0);
+	assert.ok(user.render(80).some((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trim() === ""), "paragraph spacing stays intact");
+	f.tui.terminal.rows = 40;
+	assert.deepEqual(f.chat.render(80), original);
+	f.tui.terminal.rows = 20;
+	f.chat.render(80);
+	f.handlers.get("session_shutdown")({}, f.ctx);
+	assert.equal(f.chat.render, originalRender);
+	assert.deepEqual(f.chat.render(80), original);
+});
+
+test("new messages and rebuilt streaming content become compact on the next render", () => {
+	const f = fixture();
+	f.handlers.get("session_start")({}, f.ctx);
+	f.tui.terminal.rows = 30;
+	const user = new UserMessageComponent("hello");
+	const assistant = new AssistantMessageComponent({ content: [{ type: "text", text: "partial" }], stopReason: "stop" });
+	f.chat.addChild(user);
+	f.chat.addChild(assistant);
+	f.chat.render(80);
+	user.rebuild();
+	assistant.updateContent({ content: [{ type: "text", text: "complete" }], stopReason: "stop" }, true);
+	f.chat.render(20);
+	assert.equal(user.children[0].paddingY, 0);
+	assert.equal(assistant.contentContainer.children[0].lines, 0);
+	f.tui.terminal.rows = 50;
+	f.chat.render(80);
+	assert.equal(user.children[0].paddingY, 1);
+	assert.equal(assistant.contentContainer.children[0].lines, 1);
 	f.handlers.get("session_shutdown")({}, f.ctx);
 });
 
