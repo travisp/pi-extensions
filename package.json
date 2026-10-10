@@ -15,7 +15,8 @@
       "./extensions/system-prompt-display/index.ts",
       "./extensions/herdr-dev/src/index.ts",
       "./extensions/tool-context-usage/index.ts",
-      "./extensions/openrouter-jev-only/index.ts"
+      "./extensions/openrouter-jev-only/index.ts",
+      "./extensions/pi-compact/index.ts"
     ]
   },
   "scripts": {

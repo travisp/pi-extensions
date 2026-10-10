@@ -19,6 +19,7 @@
     "extensions/stream-output/index.ts",
     "extensions/codemode-collapse-fix/index.ts",
     "extensions/tool-context-usage/index.ts",
-    "extensions/openrouter-jev-only/index.ts"
+    "extensions/openrouter-jev-only/index.ts",
+    "extensions/pi-compact/index.ts"
   ]
 }

@@ -8,6 +8,8 @@ Some of these are more developed than others. Extensions published to the npm re
 
 ## Extensions
 
+- [`pi-compact`](extensions/pi-compact/) removes the blank spacer above the input editor with a scoped runtime patch.
+
 - [`prompt-ninja`](extensions/prompt-ninja/) customizes and previews Pi system-prompt sections.
 - [`remote-ssh-admin`](extensions/remote-ssh-admin/) routes remote tools through persistent SSH transports with approved elevation.
 - [`auto-session-name`](extensions/auto-session-name/) names new sessions automatically.
