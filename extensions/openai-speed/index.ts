@@ -1,8 +1,11 @@
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type Mode = "off" | "fast" | "ultrafast";
 const icons: Record<Mode, string> = { off: "󰾆", fast: "", ultrafast: "" };
 const colors = { off: "dim", fast: "accent", ultrafast: "warning" } as const;
+// Priority is OpenAI's accepted alias for Fast mode.
+const serviceTiers = { off: undefined, fast: "priority", ultrafast: "ultrafast" } as const;
 const commandCompletions = [
 	{ value: "on", label: "on", description: "Request Fast (priority tier)" },
 	{ value: "ultrafast", label: "ultrafast", description: "Request Ultrafast" },
@@ -27,6 +30,8 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		// Reload resets the mode, so an old connection must not retain its previous tier hint.
+		cleanupSessionResources(ctx.sessionManager.getSessionId());
 		mode = "off";
 		debug = false;
 		requestedTier = "unset";
@@ -49,36 +54,50 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`OpenAI speed debug: ${debug ? "on" : "off"}.`, "info");
 				return;
 			}
+			let nextMode = mode;
 			switch (command) {
 				case "":
 				case "status":
 					break;
 				case "on":
-					mode = "fast";
+					nextMode = "fast";
 					break;
 				case "off":
 				case "ultrafast":
-					mode = command;
+					nextMode = command;
 					break;
 				default:
 					ctx.ui.notify("Usage: /openai-speed [on|off|ultrafast|status|debug on|debug off]", "error");
 					return;
+			}
+			if (nextMode !== mode) {
+				await ctx.waitForIdle();
+				// Only this session reconnects; its conversation history is unchanged.
+				cleanupSessionResources(ctx.sessionManager.getSessionId());
+				mode = nextMode;
 			}
 			updateStatus(ctx);
 			ctx.ui.notify(`OpenAI speed: ${mode}.`, "info");
 		},
 	});
 
+	pi.on("before_provider_headers", (event, ctx) => {
+		const model = ctx.model;
+		if (model?.provider !== "openai-codex") return;
+		// Pi assembles headers before the payload hook, so derive both from the selected mode.
+		const tier = serviceTiers[mode];
+		let hint = `model=${model.id}`;
+		if (tier) hint += `;tier=${tier}`;
+		event.headers["x-codex-routing-hint"] = hint;
+		if (debug) ctx.ui.notify(`OpenAI speed: outgoing x-codex-routing-hint=${JSON.stringify(hint)}`, "info");
+	});
+
 	pi.on("before_provider_request", (event, ctx) => {
 		if (!isOpenAI(ctx.model?.provider)) return;
 		const payload = event.payload as { service_tier?: string };
-		if (mode === "off") {
-			requestedTier = payload.service_tier ?? "unset";
-			return;
-		}
-		// Priority is OpenAI's accepted alias for Fast mode.
-		requestedTier = mode === "fast" ? "priority" : "ultrafast";
-		return { ...payload, service_tier: requestedTier };
+		const tier = serviceTiers[mode];
+		requestedTier = tier ?? payload.service_tier ?? "unset";
+		if (tier) return { ...payload, service_tier: tier };
 	});
 
 	pi.on("provider_stream_event", (event, ctx) => {

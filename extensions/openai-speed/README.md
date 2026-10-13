@@ -10,6 +10,16 @@ Argument autocomplete offers all options with descriptions, including `debug on`
 
 Debug reports the outgoing tier seen by this extension and the server's returned `service_tier`. An omitted outgoing tier shows `unset`; an omitted response tier shows `unknown`, not confirmation. Other extensions running afterward can still change the outgoing tier. No payloads or diagnostics are persisted.
 
+## Routing and connections
+
+For `openai-codex`, sends `x-codex-routing-hint: model=<model>;tier=<tier>` on SSE requests and new WebSocket handshakes. When off, sends only `model=<model>`. The API-key `openai` provider does not receive this header.
+
+Debug shows the outgoing hint, not server confirmation. Codex may return `service_tier: "default"` even for tiered requests. No other headers are logged.
+
+Speed changes wait for the active turn to finish, then clear only this session's transport resources. The next request reconnects with the new hint; conversation history stays intact. Same-mode selections, status queries, and debug toggles keep the connection. Session start/reload also clears it when resetting to off. Transport can remain `auto` or `websocket-cached`.
+
+## Session behavior
+
 Speed and debug both start off every session and reload. No configuration or persistence.
 Applies to any model on `openai` or `openai-codex`; the server decides tier availability.
 

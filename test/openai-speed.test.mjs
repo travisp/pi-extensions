@@ -1,15 +1,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import openaiSpeed from "../extensions/openai-speed/index.ts";
+import { registerHooks } from "node:module";
+import { cleanups } from "./fixtures/pi-ai.mjs";
 
+// Resolve the extension's Pi import to a fixture so tests need no local Pi installation.
+const mockAiUrl = new URL("./fixtures/pi-ai.mjs", import.meta.url).href;
+const hooks = registerHooks({
+	resolve(specifier, context, nextResolve) {
+		return specifier === "@earendil-works/pi-ai"
+			? { url: mockAiUrl, shortCircuit: true }
+			: nextResolve(specifier, context);
+	},
+});
+const { default: openaiSpeed } = await import("../extensions/openai-speed/index.ts");
+hooks.deregister();
+
+let sessionNumber = 0;
 function setup(provider = "openai") {
 	const handlers = new Map();
 	let command;
 	let completions;
 	let status;
 	const notifications = [];
+	const sessionId = `session-${++sessionNumber}`;
+	let idleWaits = 0;
 	const ctx = {
 		model: { provider, id: "any-model" },
+		sessionManager: { getSessionId: () => sessionId },
+		waitForIdle: async () => { idleWaits++; },
 		ui: {
 			theme: { fg: (color, text) => `${color}:${text}` },
 			setStatus: (key, value) => {
@@ -32,9 +50,11 @@ function setup(provider = "openai") {
 	return {
 		ctx, emit, notifications,
 		command: (args) => command(args, ctx),
-		completions: (prefix) => completions(prefix),
+		completions,
 		get status() { return status; },
 		get notification() { return notifications.at(-1); },
+		get cleanupCount() { return cleanups.filter((id) => id === sessionId).length; },
+		get idleWaits() { return idleWaits; },
 	};
 }
 
@@ -69,7 +89,40 @@ test("explicit commands select icons; bare /openai-speed and status do not chang
 	}
 });
 
-test("session start resets mode; provider changes refresh the icon", async () => {
+test("speed changes reconnect only this session; queries and unchanged modes keep the connection", async () => {
+	const app = setup("openai-codex");
+	const other = setup("openai-codex");
+	assert.equal(app.cleanupCount, 1);
+	for (const command of ["", "status", "off", "debug on", "debug off", "invalid"]) {
+		await app.command(command);
+	}
+	assert.equal(app.cleanupCount, 1);
+	assert.equal(app.idleWaits, 0);
+	for (const command of ["on", "ultrafast", "off"]) {
+		await app.command(command);
+		await app.command(command);
+	}
+	assert.equal(app.cleanupCount, 4);
+	assert.equal(app.idleWaits, 3);
+	assert.equal(other.cleanupCount, 1);
+});
+
+test("speed changes wait for the current turn before reconnecting or changing the tier", async () => {
+	const app = setup("openai-codex");
+	const idle = Promise.withResolvers();
+	app.ctx.waitForIdle = () => idle.promise;
+	const changing = app.command("ultrafast");
+	assert.equal(app.cleanupCount, 1);
+	assert.equal(app.status, "dim:󰾆");
+	assert.equal(app.emit("before_provider_request", { payload: {} }), undefined);
+	idle.resolve();
+	await changing;
+	assert.equal(app.cleanupCount, 2);
+	assert.equal(app.status, "warning:");
+	assert.equal(app.emit("before_provider_request", { payload: {} }).service_tier, "ultrafast");
+});
+
+test("session start resets mode and cached resources; provider changes refresh the icon", async () => {
 	const app = setup();
 	await app.command("ultrafast");
 	app.ctx.model.provider = "anthropic";
@@ -78,7 +131,9 @@ test("session start resets mode; provider changes refresh the icon", async () =>
 	app.ctx.model.provider = "openai-codex";
 	app.emit("model_select");
 	assert.equal(app.status, "warning:");
+	const beforeReload = app.cleanupCount;
 	app.emit("session_start");
+	assert.equal(app.cleanupCount, beforeReload + 1);
 	assert.equal(app.status, "dim:󰾆");
 	assert.equal(app.emit("before_provider_request", { payload: {} }), undefined);
 });
@@ -97,6 +152,56 @@ test("only OpenAI providers receive the selected tier; payload is not mutated", 
 		await app.command("off");
 		assert.equal(app.emit("before_provider_request", { payload }), undefined);
 	}
+});
+
+test("Codex routing hints match the selected tier before the payload hook runs", async () => {
+	const app = setup("openai-codex");
+	app.ctx.model.id = "gpt-6.1-sol";
+	const cases = [
+		["off", undefined, "model=gpt-6.1-sol"],
+		["on", "priority", "model=gpt-6.1-sol;tier=priority"],
+		["ultrafast", "ultrafast", "model=gpt-6.1-sol;tier=ultrafast"],
+		["off", undefined, "model=gpt-6.1-sol"],
+	];
+	for (const [command, tier, hint] of cases) {
+		await app.command(command);
+		const headers = { "existing-header": "keep", "x-codex-routing-hint": "stale" };
+		assert.equal(app.emit("before_provider_headers", { headers }), undefined);
+		assert.deepEqual(headers, {
+			"existing-header": "keep",
+			"x-codex-routing-hint": hint,
+		});
+		const payload = { model: app.ctx.model.id };
+		const result = app.emit("before_provider_request", { payload });
+		assert.equal(result?.service_tier, tier);
+	}
+});
+
+test("routing hints leave other providers untouched", async () => {
+	for (const provider of ["openai", "anthropic"]) {
+		const app = setup(provider);
+		await app.command("ultrafast");
+		await app.command("debug on");
+		const headers = { "existing-header": "keep" };
+		const count = app.notifications.length;
+		app.emit("before_provider_headers", { headers });
+		assert.deepEqual(headers, { "existing-header": "keep" });
+		assert.equal(app.notifications.length, count);
+	}
+});
+
+test("outgoing routing-hint debug output is opt-in", async () => {
+	const app = setup("openai-codex");
+	const event = { headers: {} };
+	app.emit("before_provider_headers", event);
+	assert.equal(app.notifications.length, 0);
+	await app.command("ultrafast");
+	await app.command("debug on");
+	app.emit("before_provider_headers", event);
+	assert.equal(app.notification, 'OpenAI speed: outgoing x-codex-routing-hint="model=any-model;tier=ultrafast"');
+	await app.command("debug off");
+	app.emit("before_provider_headers", event);
+	assert.equal(app.notification, "OpenAI speed debug: off.");
 });
 
 function response(app, type, tier) {
