@@ -2,6 +2,9 @@ import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type Mode = "off" | "fast" | "ultrafast";
+type Sample = { provider: string; model: string; tier?: string; tokens: number; durationMs: number };
+type Total = { tokens: number; durationMs: number; requests: number };
+const tpsEntryType = "openai-speed-tps";
 const icons: Record<Mode, string> = { off: "󰾆", fast: "", ultrafast: "" };
 const colors = { off: "dim", fast: "accent", ultrafast: "warning" } as const;
 // Priority is OpenAI's accepted alias for Fast mode.
@@ -11,6 +14,7 @@ const commandCompletions = [
 	{ value: "ultrafast", label: "ultrafast", description: "Request Ultrafast" },
 	{ value: "off", label: "off", description: "Stop overriding the service tier" },
 	{ value: "status", label: "status", description: "Show the selected speed mode" },
+	{ value: "tps", label: "tps", description: "Toggle request TPS in the speed widget" },
 	{ value: "debug on", label: "debug on", description: "Show requested and returned tiers in the terminal" },
 	{ value: "debug off", label: "debug off", description: "Hide tier diagnostics" },
 ];
@@ -19,14 +23,36 @@ export default function (pi: ExtensionAPI) {
 	let mode: Mode = "off";
 	let debug = false;
 	let requestedTier = "unset";
+	let showTps = true;
+	let latest: Sample | undefined;
+	let pending: { start: number; tier?: string } | undefined;
+	const totals = new Map<string, Total>();
+
+	function addSample(sample: Sample): void {
+		latest = sample;
+		const key = `${sample.provider}/${sample.model}${sample.tier ? ` [${sample.tier}]` : ""}`;
+		const total = totals.get(key) ?? { tokens: 0, durationMs: 0, requests: 0 };
+		total.tokens += sample.tokens;
+		total.durationMs += sample.durationMs;
+		total.requests++;
+		totals.set(key, total);
+	}
+
+	function rate(sample: Pick<Sample, "tokens" | "durationMs">): string {
+		return (sample.tokens / (sample.durationMs / 1000)).toFixed(1);
+	}
 
 	function isOpenAI(provider: string | undefined): boolean {
 		return provider === "openai" || provider === "openai-codex";
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
-		const displayMode = isOpenAI(ctx.model?.provider) ? mode : "off";
-		ctx.ui.setStatus("openai-speed", ctx.ui.theme.fg(colors[displayMode], icons[displayMode]));
+		if (!ctx.hasUI) return;
+		const openai = isOpenAI(ctx.model?.provider);
+		const displayMode = openai ? mode : "off";
+		let text = ctx.ui.theme.fg(colors[displayMode], icons[displayMode]);
+		if (showTps && openai) text += ctx.ui.theme.fg("muted", ` TPS ${latest ? rate(latest) : "-"}`);
+		ctx.ui.setStatus("openai-speed", text);
 	}
 
 	pi.on("session_start", (_event, ctx) => {
@@ -35,13 +61,20 @@ export default function (pi: ExtensionAPI) {
 		mode = "off";
 		debug = false;
 		requestedTier = "unset";
+		showTps = true;
+		latest = undefined;
+		pending = undefined;
+		totals.clear();
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type === "custom" && entry.customType === tpsEntryType) addSample(entry.data as Sample);
+		}
 		updateStatus(ctx);
 	});
 
 	pi.on("model_select", (_event, ctx) => updateStatus(ctx));
 
 	pi.registerCommand("openai-speed", {
-		description: "Show or set OpenAI speed: /openai-speed [on|off|ultrafast|status|debug on|debug off]",
+		description: "Show or set OpenAI speed: /openai-speed [on|off|ultrafast|status|tps|debug on|debug off]",
 		getArgumentCompletions: (prefix) => {
 			const normalized = prefix.trimStart().toLowerCase();
 			const matches = commandCompletions.filter((item) => item.value.startsWith(normalized));
@@ -49,6 +82,12 @@ export default function (pi: ExtensionAPI) {
 		},
 		handler: async (args, ctx) => {
 			const command = args.trim().toLowerCase();
+			if (command === "tps") {
+				showTps = !showTps;
+				updateStatus(ctx);
+				ctx.ui.notify(`OpenAI speed TPS: ${showTps ? "on" : "off"}.`, "info");
+				return;
+			}
 			if (command === "debug on" || command === "debug off") {
 				debug = command === "debug on";
 				ctx.ui.notify(`OpenAI speed debug: ${debug ? "on" : "off"}.`, "info");
@@ -67,7 +106,7 @@ export default function (pi: ExtensionAPI) {
 					nextMode = command;
 					break;
 				default:
-					ctx.ui.notify("Usage: /openai-speed [on|off|ultrafast|status|debug on|debug off]", "error");
+					ctx.ui.notify("Usage: /openai-speed [on|off|ultrafast|status|tps|debug on|debug off]", "error");
 					return;
 			}
 			if (nextMode !== mode) {
@@ -94,21 +133,54 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_provider_request", (event, ctx) => {
 		if (!isOpenAI(ctx.model?.provider)) return;
+		// message_start occurs after the provider responds, so time from this hook instead.
+		pending = { start: performance.now() };
 		const payload = event.payload as { service_tier?: string };
 		const tier = serviceTiers[mode];
 		requestedTier = tier ?? payload.service_tier ?? "unset";
 		if (tier) return { ...payload, service_tier: tier };
 	});
 
+	pi.on("message_end", (event, ctx) => {
+		const message = event.message;
+		if (message.role !== "assistant") return;
+		const request = pending;
+		pending = undefined;
+		if (!request || message.stopReason === "error" || message.stopReason === "aborted") return;
+		const sample: Sample = {
+			provider: message.provider,
+			model: message.model,
+			tier: request.tier,
+			// Output usage includes reasoning tokens.
+			tokens: message.usage.output,
+			durationMs: performance.now() - request.start,
+		};
+		addSample(sample);
+		pi.appendEntry(tpsEntryType, sample);
+		updateStatus(ctx);
+	});
+
+	pi.registerCommand("tps", {
+		description: "Show session TPS by model and speed tier",
+		handler: async (_args, ctx) => {
+			const lines = [...totals].map(([key, total]) =>
+				`${key}: ${rate(total)} TPS · ${total.requests} requests · ${total.tokens} tokens`,
+			);
+			ctx.ui.notify(lines.join("\n") || "No completed requests yet.", "info");
+		},
+	});
+
 	pi.on("provider_stream_event", (event, ctx) => {
-		if (!debug || !isOpenAI(event.provider)) return;
-		const data = event.data as { type: string; response: { service_tier?: string } };
+		if (!isOpenAI(event.provider)) return;
+		const data = event.data as { type: string; response?: { service_tier?: string } };
+		if (pending && data.response?.service_tier) pending.tier = data.response.service_tier;
+		if (!debug) return;
 		// Codex exposes response.done before Pi normalizes it to response.completed.
 		switch (data.type) {
 			case "response.completed":
 			case "response.done":
 			case "response.incomplete":
-				ctx.ui.notify(`OpenAI speed: requested=${requestedTier} returned=${data.response.service_tier ?? "unknown"}`, "info");
+				ctx.ui.notify(`OpenAI speed: requested=${requestedTier} returned=${data.response?.service_tier ?? "unknown"}`, "info");
 		}
 	});
 }

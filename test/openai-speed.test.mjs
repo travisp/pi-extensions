@@ -25,11 +25,13 @@ function setup(provider = "openai") {
 	const sessionId = `session-${++sessionNumber}`;
 	let idleWaits = 0;
 	const ctx = {
+		hasUI: true,
 		model: { provider, id: "any-model" },
-		sessionManager: { getSessionId: () => sessionId },
+		sessionManager: { getSessionId: () => sessionId, getBranch: () => [] },
 		waitForIdle: async () => { idleWaits++; },
 		ui: {
-			theme: { fg: (color, text) => `${color}:${text}` },
+			// TPS rendering is covered separately; these tests check the speed icon.
+			theme: { fg: (color, text) => color === "muted" ? "" : `${color}:${text}` },
 			setStatus: (key, value) => {
 				assert.equal(key, "openai-speed");
 				status = value;
@@ -40,6 +42,7 @@ function setup(provider = "openai") {
 	openaiSpeed({
 		on: (name, handler) => handlers.set(name, handler),
 		registerCommand: (name, definition) => {
+			if (name === "tps") return;
 			assert.equal(name, "openai-speed");
 			command = definition.handler;
 			completions = definition.getArgumentCompletions;
@@ -61,7 +64,7 @@ function setup(provider = "openai") {
 test("argument completions include descriptions and complete full debug arguments", () => {
 	const app = setup();
 	const values = (prefix) => app.completions(prefix)?.map((item) => item.value) ?? null;
-	assert.deepEqual(values(""), ["on", "ultrafast", "off", "status", "debug on", "debug off"]);
+	assert.deepEqual(values(""), ["on", "ultrafast", "off", "status", "tps", "debug on", "debug off"]);
 	assert.ok(app.completions("").every((item) => item.label && item.description));
 	assert.deepEqual(values("u"), ["ultrafast"]);
 	assert.deepEqual(values("  UL"), ["ultrafast"]);
