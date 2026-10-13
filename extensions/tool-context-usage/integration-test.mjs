@@ -36,6 +36,16 @@ try {
 		}
 	}
 	const command = usage.commands.get("tool-context-usage");
+	const values = (prefix) => command.getArgumentCompletions(prefix)?.map((item) => item.value) ?? null;
+	assert.deepEqual(values(""), ["on", "off"]);
+	assert.ok(command.getArgumentCompletions("").every((item) => item.label && item.description));
+	assert.deepEqual(values("o"), ["on", "off"]);
+	assert.deepEqual(values("on"), ["on"]);
+	assert.deepEqual(values("of"), ["off"]);
+	assert.deepEqual(values("  of"), ["off"]);
+	assert.equal(values("invalid"), null);
+	assert.equal(values("on extra"), null);
+	await assert.rejects(readFile(configPath), { code: "ENOENT" });
 	await command.handler("", ctx);
 	assert.equal(notifications.at(-1), "Tool context usage is on.");
 	await command.handler("invalid", ctx);
@@ -59,7 +69,7 @@ try {
 	for (const row of ctx.rows) assert.match(row.render(120).join("\n"), /context tokens/);
 	for (const handler of fresh.handlers.get("session_shutdown")) await handler({}, ctx);
 	for (const row of ctx.rows) assert.doesNotMatch(row.render(120).join("\n"), /context tokens/);
-	console.log("PASS: five real tool boxes, collapse-fix coexistence, layout, cleanup, persistent on/off and reload; zero tool registrations.");
+	console.log("PASS: five real tool boxes, collapse-fix coexistence, layout, cleanup, argument autocomplete, persistent on/off and reload; zero tool registrations.");
 } finally {
 	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

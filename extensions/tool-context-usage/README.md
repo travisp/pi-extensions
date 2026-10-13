@@ -18,6 +18,8 @@ Pi 0.99.2+ bounds codemode previews natively; codemode-collapse-fix is no longer
 
 Use `/tool-context-usage` to show the current setting, `/tool-context-usage off` to hide estimates, and `/tool-context-usage on` to show them again. Changes apply immediately, including existing tool boxes. The setting defaults to on and persists globally in `~/.pi/agent/extensions/tool-context-usage.json` (under your configured Pi agent directory).
 
+Argument autocomplete offers `on` and `off` with descriptions; type `/tool-context-usage o` to see both or `of` to narrow to `off`.
+
 Expand a tool to see the arguments/result breakdown. Bash extends its final timing row; other tools get a footer. Narrow terminals truncate the annotation.
 
 There is no SSH-specific handling: rendering decorates the final tool box regardless of which extension owns execution.

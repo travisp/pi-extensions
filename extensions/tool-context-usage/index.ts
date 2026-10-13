@@ -38,6 +38,14 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("tool-context-usage", {
 		description: "Show context-usage setting, or persistently enable/disable it with on|off",
+		getArgumentCompletions: (prefix) => {
+			const options = [
+				{ value: "on", label: "on", description: "Show estimated context tokens in tool boxes" },
+				{ value: "off", label: "off", description: "Hide estimated context tokens in tool boxes" },
+			];
+			const matches = options.filter((item) => item.value.startsWith(prefix.trimStart()));
+			return matches.length > 0 ? matches : null;
+		},
 		handler: async (args, ctx) => {
 			const action = args.trim();
 			if (action !== "" && action !== "on" && action !== "off") {
