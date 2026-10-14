@@ -18,7 +18,7 @@ For `openai-codex`, sends `x-codex-routing-hint: model=<model>;tier=<tier>` on S
 
 Debug shows the outgoing hint, not server confirmation. Codex may return `service_tier: "default"` even for tiered requests. No other headers are logged.
 
-Speed changes wait for the active turn to finish, then clear only this session's transport resources. The next request reconnects with the new hint; conversation history stays intact. Same-mode selections, status queries, and debug toggles keep the connection. Session start/reload also clears it when resetting to off. Transport can remain `auto` or `websocket-cached`.
+Speed changes wait until Pi is idle (the entire agent run must finish, not just one model response), then clear only this session's transport resources. While busy, the command immediately reports the requested mode and that it is waiting; the icon and tier change only when the wait finishes. The next request reconnects with the new hint; conversation history stays intact. Same-mode selections, status queries, and debug toggles keep the connection. Session start/reload also clears it when resetting to off. Transport can remain `auto` or `websocket-cached`.
 
 ## Session behavior
 

@@ -28,6 +28,7 @@ function setup(provider = "openai") {
 		hasUI: true,
 		model: { provider, id: "any-model" },
 		sessionManager: { getSessionId: () => sessionId, getBranch: () => [] },
+		isIdle: () => true,
 		waitForIdle: async () => { idleWaits++; },
 		ui: {
 			// TPS rendering is covered separately; these tests check the speed icon.
@@ -83,7 +84,9 @@ test("explicit commands select icons; bare /openai-speed and status do not chang
 	const app = setup();
 	assert.equal(app.status, "dim:󰾆");
 	for (const [args, icon, mode] of [["on", "accent:", "fast"], ["ultrafast", "warning:", "ultrafast"], ["off", "dim:󰾆", "off"]]) {
+		const before = app.notifications.length;
 		await app.command(args);
+		assert.equal(app.notifications.length, before + 1);
 		for (const query of ["", "status"]) {
 			await app.command(query);
 			assert.equal(app.status, icon);
@@ -110,19 +113,32 @@ test("speed changes reconnect only this session; queries and unchanged modes kee
 	assert.equal(other.cleanupCount, 1);
 });
 
-test("speed changes wait for the current turn before reconnecting or changing the tier", async () => {
-	const app = setup("openai-codex");
-	const idle = Promise.withResolvers();
-	app.ctx.waitForIdle = () => idle.promise;
-	const changing = app.command("ultrafast");
-	assert.equal(app.cleanupCount, 1);
-	assert.equal(app.status, "dim:󰾆");
-	assert.equal(app.emit("before_provider_request", { payload: {} }), undefined);
-	idle.resolve();
-	await changing;
-	assert.equal(app.cleanupCount, 2);
-	assert.equal(app.status, "warning:");
-	assert.equal(app.emit("before_provider_request", { payload: {} }).service_tier, "ultrafast");
+test("busy speed changes acknowledge immediately, then reconnect and apply the tier when idle", async () => {
+	for (const [command, mode, icon, tier] of [
+		["on", "fast", "accent:", "priority"],
+		["ultrafast", "ultrafast", "warning:", "ultrafast"],
+		["off", "off", "dim:󰾆", undefined],
+	]) {
+		const app = setup("openai-codex");
+		if (command === "off") await app.command("on");
+		const previousStatus = app.status;
+		const previousTier = app.emit("before_provider_request", { payload: {} })?.service_tier;
+		const cleanupsBefore = app.cleanupCount;
+		const idle = Promise.withResolvers();
+		app.ctx.isIdle = () => false;
+		app.ctx.waitForIdle = () => idle.promise;
+		const changing = app.command(command);
+		assert.equal(app.notification, `OpenAI speed: ${mode} requested; waiting for Pi to become idle.`);
+		assert.equal(app.cleanupCount, cleanupsBefore);
+		assert.equal(app.status, previousStatus);
+		assert.equal(app.emit("before_provider_request", { payload: {} })?.service_tier, previousTier);
+		idle.resolve();
+		await changing;
+		assert.equal(app.notification, `OpenAI speed: ${mode}.`);
+		assert.equal(app.cleanupCount, cleanupsBefore + 1);
+		assert.equal(app.status, icon);
+		assert.equal(app.emit("before_provider_request", { payload: {} })?.service_tier, tier);
+	}
 });
 
 test("session start resets mode and cached resources; provider changes refresh the icon", async () => {

@@ -110,6 +110,9 @@ export default function (pi: ExtensionAPI) {
 					return;
 			}
 			if (nextMode !== mode) {
+				if (!ctx.isIdle()) {
+					ctx.ui.notify(`OpenAI speed: ${nextMode} requested; waiting for Pi to become idle.`, "info");
+				}
 				await ctx.waitForIdle();
 				// Only this session reconnects; its conversation history is unchanged.
 				cleanupSessionResources(ctx.sessionManager.getSessionId());
