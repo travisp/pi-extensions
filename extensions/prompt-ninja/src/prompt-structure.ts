@@ -30,12 +30,15 @@ export function inspectPrompt(text: string, options: PromptOptions): PromptSecti
 		add("intro", options.customPrompt.length);
 	} else {
 		const end = text.indexOf("\n\n<tools>\n");
-		if (end < 0 || !text.startsWith("You are an expert coding assistant operating inside pi,")) return undefined;
+		const preamble = text.slice(0, end);
+		if (end < 0 || preamble !== "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.") return undefined;
 		add("intro", end);
 	}
 
 	const tools = options.selectedTools ?? ["read", "bash", "edit", "write"];
-	const readTool = tools.find((tool) => tool === "read") ?? tools.find((tool) => tool === "bash");
+	const visibleTools = tools.filter((tool) => !options.hiddenTools?.includes(tool));
+	const readTool = (["read", "bash"] as const).find((tool) => visibleTools.includes(tool)) ??
+		(["read", "bash"].some((tool) => tools.includes(tool)) ? "indirect" : undefined);
 	const skillText = readTool ? formatSkillsForPrompt(options.skills ?? [], readTool).trim() : "";
 	const expected = new Set(options.customPrompt ? [] : ["tools", "rules", "docs"]);
 	if (options.appendSystemPrompt) expected.add("addendum");

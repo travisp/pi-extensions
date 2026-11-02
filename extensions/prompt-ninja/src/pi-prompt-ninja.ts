@@ -185,7 +185,8 @@ function promptSectionText(name: PromptSectionName): string | undefined {
 function filterSkillSection(text: string, skills: Skill[], allowedSkills: Set<string>): string {
 	if (configurableSkills(skills).every((skill) => allowedSkills.has(skill.name))) return text;
 	const tools = latestPromptOptions.selectedTools ?? ["read", "bash", "edit", "write"];
-	const readTool = tools.includes("read") ? "read" : "bash";
+	const visibleTools = tools.filter((tool) => !latestPromptOptions.hiddenTools?.includes(tool));
+	const readTool = (["read", "bash"] as const).find((tool) => visibleTools.includes(tool)) ?? "indirect";
 	const body = formatSkillsForPrompt(skills.filter((skill) => allowedSkills.has(skill.name)), readTool).trim();
 	return body ? `<skills>\n${body}\n</skills>` : "";
 }

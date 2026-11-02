@@ -24,8 +24,8 @@
     "test": "node --test test/*.test.mjs extensions/herdr-dev/test/*.test.mjs && cd extensions/remote-ssh-admin && node scripts/smoke-fake-ssh.mjs"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.0",
-    "@earendil-works/pi-tui": "^0.84.0",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "@earendil-works/pi-tui": "^1.5.0",
     "@types/node": "^24.13.3",
     "typescript": "^5.9.3"
   }

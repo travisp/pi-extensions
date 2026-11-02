@@ -17,7 +17,7 @@ test("long single-line output is bounded after wrapping and expansion retains it
 	for (const width of [20, 80, 120]) {
 		const collapsed = tool.renderResult(result(output), { expanded: false, isPartial: false }, theme, context);
 		assert.ok(collapsed.render(width).length <= 17);
-		assert.match(collapsed.render(width).join("\n"), /expand/);
+		assert.match(collapsed.render(width).join("\n"), width === 20 ? /more/ : /expand/);
 		const expanded = tool.renderResult(result(output), { expanded: true, isPartial: false }, theme, context);
 		assert.ok(expanded.render(width).length > 17);
 		assert.equal(expanded.render(width).join("").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s/g, ""), output);

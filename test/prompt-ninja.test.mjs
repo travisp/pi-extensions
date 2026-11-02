@@ -100,6 +100,7 @@ test("opaque and malformed prompts leave every input unchanged and warn once per
 		(text) => text + "\n\n<docs>\nDuplicate\n</docs>",
 		(text) => text + "\nUnexpected trailing instructions",
 		(text) => text.replace("<cwd>", "<working_directory>"),
+		(text) => text.replace("You are a coding assistant", "An unrecognized assistant"),
 	]) {
 		const result = await run({ appendSection: false, skills: false }, {}, {
 			render: (input) => malformed(buildSystemPrompt(input)),
@@ -112,7 +113,7 @@ test("opaque and malformed prompts leave every input unchanged and warn once per
 	assert.equal(forced.result, undefined);
 	assert.deepEqual(forced.systemPromptOptions, forced.before);
 	assert.equal(forced.prompt, options.forceSystemPrompt);
-	assert.equal(warnings.length, 6);
+	assert.equal(warnings.length, 7);
 });
 
 test("validation failure after rebuilding rolls back structured edits", async (t) => {
@@ -172,7 +173,7 @@ test("each prompt-section toggle preserves the other sections of the current Pi 
 	const { apply, options } = await fixture(t);
 	assert.equal(await apply(), buildSystemPrompt(options));
 	const sections = {
-		intro: "You are an expert coding assistant",
+		intro: "You are a coding assistant running inside pi",
 		tools: "<tools>",
 		guidelines: "- Be concise in your responses",
 		piDocumentation: "Pi documentation (read only",
@@ -202,6 +203,24 @@ test("skill filtering handles read and bash prompts without leaving empty wrappe
 		assert.ok(!empty.includes("<skills>"));
 		assert.ok(empty.includes("<cwd>"));
 	}
+});
+
+test("skill filtering supports Pi 1.5 hidden readers", async (t) => {
+	const { run, options, warnings } = await fixture(t);
+	options.skills.push({ ...options.skills[0], name: "second", description: "Second skill" });
+	for (const [selectedTools, hiddenTools] of [
+		[["read"], ["read"]],
+		[["read", "bash"], ["read"]],
+	]) {
+		options.selectedTools = selectedTools;
+		options.hiddenTools = hiddenTools;
+		const result = await run({}, { deny: ["example"] });
+		assert.ok(!result.prompt.includes("<name>example</name>"));
+		assert.ok(result.prompt.includes("<name>second</name>"));
+		assert.deepEqual(result.systemPromptOptions.selectedTools, selectedTools);
+		assert.deepEqual(result.systemPromptOptions.hiddenTools, hiddenTools);
+	}
+	assert.deepEqual(warnings, []);
 });
 
 test("nested section tags and custom sections survive unrelated toggles", async (t) => {
