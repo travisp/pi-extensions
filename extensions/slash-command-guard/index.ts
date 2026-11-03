@@ -39,6 +39,9 @@ export default function slashCommandGuard(pi: ExtensionAPI) {
     }
 
     const command = commandMatch[1];
+    // A second slash in the first token indicates a path, such as a pasted screenshot.
+    if (command.includes("/")) return { action: "continue" };
+
     const commands = getKnownCommandNames(pi);
     // Registered extension commands are handled before input hooks run, but prompt
     // templates and skills are expanded after input hooks. Let known commands continue

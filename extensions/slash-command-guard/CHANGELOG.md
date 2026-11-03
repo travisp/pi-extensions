@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Allow path-like input when the first token contains a second slash, including pasted screenshot paths.
+
 ## 0.1.3 - 2026-06-09
 
 - Added npm package repository and homepage metadata pointing to the pi-extensions repository.

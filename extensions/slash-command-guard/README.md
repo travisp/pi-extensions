@@ -8,6 +8,8 @@ Does not interfere with custom slash commands registered by extensions. It also 
 
 When a user submits a message that starts with `/`, this extension checks whether the slash command is known to pi. If the command is unknown, the message is blocked and an error notification is shown.
 
+If the first whitespace-delimited token contains another `/`, the input is treated as a path and passed through unchanged. This allows pasted screenshot paths such as `/Users/travis/Desktop/Screenshot.png`, with or without text afterward. A slash later in the message does not bypass the guard: `/treee /tmp/screenshot.png` is still blocked. Root-level filenames like `/screenshot.png` remain subject to command checks.
+
 If the unknown command is close to a known command, the notification includes a hint:
 
 ```text
