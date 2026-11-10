@@ -55,13 +55,7 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setStatus("openai-speed", text);
 	}
 
-	pi.on("session_start", (_event, ctx) => {
-		// Reload resets the mode, so an old connection must not retain its previous tier hint.
-		cleanupSessionResources(ctx.sessionManager.getSessionId());
-		mode = "off";
-		debug = false;
-		requestedTier = "unset";
-		showTps = true;
+	function restoreTps(ctx: ExtensionContext): void {
 		latest = undefined;
 		pending = undefined;
 		totals.clear();
@@ -69,8 +63,19 @@ export default function (pi: ExtensionAPI) {
 			if (entry.type === "custom" && entry.customType === tpsEntryType) addSample(entry.data as Sample);
 		}
 		updateStatus(ctx);
+	}
+
+	pi.on("session_start", (_event, ctx) => {
+		// Reload resets the mode, so an old connection must not retain its previous tier hint.
+		cleanupSessionResources(ctx.sessionManager.getSessionId());
+		mode = "off";
+		debug = false;
+		requestedTier = "unset";
+		showTps = true;
+		restoreTps(ctx);
 	});
 
+	pi.on("session_tree", (_event, ctx) => restoreTps(ctx));
 	pi.on("model_select", (_event, ctx) => updateStatus(ctx));
 
 	pi.registerCommand("openai-speed", {

@@ -12,9 +12,17 @@ Argument autocomplete offers all options with descriptions, including `debug on`
 
 Debug reports the outgoing tier seen by this extension and the server's returned `service_tier`. An omitted outgoing tier shows `unset`; an omitted response tier shows `unknown`, not confirmation. Other extensions running afterward can still change the outgoing tier. No payloads or diagnostics are persisted.
 
+## ChatGPT OAuth and Fast mode
+
+In current Pi versions, `openai` supports API keys and direct ChatGPT-plan OAuth. Direct OAuth uses the [public Responses API](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference), separate from the `openai-codex` backend.
+
+Fast requests use `priority`, which OpenAI documents as [equivalent to `fast` for supported models](https://developers.openai.com/api/docs/guides/fast-mode). No change of spelling is needed for OAuth.
+
+Pi allows this payload override, but that does not guarantee Fast or Ultrafast availability for direct ChatGPT-plan OAuth. OpenAI lists an unsupported service-tier override as a possible cause of [`subscription_sharing_unsupported_capability`](https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery). If the server rejects this extension's tier override, select `/openai-speed off` before retrying. The selected mode does not confirm the tier used or its billing; do not assume Codex subscription multipliers apply to direct OAuth.
+
 ## Routing and connections
 
-For `openai-codex`, sends `x-codex-routing-hint: model=<model>;tier=<tier>` on SSE requests and new WebSocket handshakes. When off, sends only `model=<model>`. The API-key `openai` provider does not receive this header.
+For `openai-codex`, sends `x-codex-routing-hint: model=<model>;tier=<tier>` on SSE requests and new WebSocket handshakes. When off, sends only `model=<model>`. The `openai` provider does not receive this header, whether authenticated with an API key or ChatGPT OAuth.
 
 Debug shows the outgoing hint, not server confirmation. Codex may return `service_tier: "default"` even for tiered requests. No other headers are logged.
 
@@ -33,6 +41,6 @@ The icon reflects the selected mode, not server confirmation; debug does not cha
 
 The widget shows the latest completed OpenAI request: reported output tokens (including reasoning) divided by model-request time. Tools and idle time are excluded; failed and aborted requests are skipped. Hiding TPS does not stop measurement.
 
-Measurements are saved in the session and restored on resume. `/tps` groups averages by model and reported service tier. Codex’s returned tier may not reflect the requested speed mode.
+Measurements are saved in the session and restored from the active branch on resume and `/tree` navigation. Navigating branches preserves the selected speed mode, debug setting, and TPS visibility. `/tps` groups averages by model and reported service tier. Codex’s returned tier may not reflect the requested speed mode.
 
 The command is separate from pi-usage’s `/fast`. Keep other Fast-mode overrides disabled when using this extension to avoid competing service-tier changes.

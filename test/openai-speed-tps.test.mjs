@@ -27,6 +27,8 @@ function setup(t) {
 		hasUI: true,
 		model: { provider: "openai-codex", id: "codex" },
 		sessionManager: { getBranch: () => branch, getSessionId: () => "tps-test" },
+		isIdle: () => true,
+		waitForIdle: async () => {},
 		ui: {
 			theme: { fg: (_color, text) => text },
 			setStatus: (key, text) => { assert.equal(key, "openai-speed"); status = text; },
@@ -52,8 +54,11 @@ function setup(t) {
 			stopReason: "stop", usage: { output: tokens, reasoning: tokens / 2 }, ...extra,
 		} }),
 		restore: (saved) => { branch = saved; emit("session_start"); },
+		navigate: (saved) => { branch = saved; emit("session_tree"); },
 		command: async () => { await command("", ctx); return notification; },
+		speed: (args) => speedCommand(args, ctx),
 		toggle: () => speedCommand("tps", ctx),
+		get notification() { return notification; },
 		get widget() { return status; },
 		get status() { return status.match(/TPS .*/)?.[0]; },
 	};
@@ -137,6 +142,55 @@ test("restores saved measurements on the active branch and resets on a new sessi
 	app.advance(1000);
 	app.finish(100);
 	assert.equal(app.status, "TPS -");
+});
+
+test("tree navigation rebuilds TPS from only the selected branch without double counting", async (t) => {
+	const app = setup(t);
+	app.start();
+	app.advance(1000);
+	app.finish(100);
+	const shared = [...app.entries];
+	app.start();
+	app.advance(1000);
+	app.finish(300);
+	const original = [...app.entries];
+
+	app.navigate(shared);
+	assert.equal(app.status, "TPS 100.0");
+	assert.equal(await app.command(), "openai-codex/codex: 100.0 TPS · 1 requests · 100 tokens");
+	app.navigate(shared);
+	assert.equal(await app.command(), "openai-codex/codex: 100.0 TPS · 1 requests · 100 tokens");
+	app.start();
+	app.advance(2000);
+	app.finish(200);
+	assert.equal(await app.command(), "openai-codex/codex: 100.0 TPS · 2 requests · 300 tokens");
+
+	app.navigate(original);
+	assert.equal(app.status, "TPS 300.0");
+	assert.equal(await app.command(), "openai-codex/codex: 200.0 TPS · 2 requests · 400 tokens");
+	app.navigate([]);
+	assert.equal(app.status, "TPS -");
+	assert.equal(await app.command(), "No completed requests yet.");
+});
+
+test("tree navigation clears pending timing but preserves speed, debug, and TPS visibility", async (t) => {
+	const app = setup(t);
+	await app.speed("on");
+	await app.speed("debug on");
+	await app.toggle();
+	app.start();
+	app.navigate([]);
+	app.advance(1000);
+	app.finish(100);
+	assert.equal(app.entries.length, 0);
+	assert.equal(app.widget, "");
+	await app.toggle();
+	assert.equal(app.widget, " TPS -");
+	assert.equal(app.emit("before_provider_request", { payload: {} }).service_tier, "priority");
+	app.emit("provider_stream_event", {
+		provider: "openai-codex", data: { type: "response.completed", response: { service_tier: "priority" } },
+	});
+	assert.equal(app.notification, "OpenAI speed: requested=priority returned=priority");
 });
 
 test("TPS toggle shares the speed widget and keeps measuring while hidden", async (t) => {
