@@ -4,7 +4,7 @@ interface ToolRow {
 }
 
 export function installRenderPatch(
-	prototype: { render(width: number): string[] },
+	prototype: { render(width: number): readonly string[] },
 	options: {
 		estimateResult(content: unknown): number;
 		format(text: string, width: number, row: ToolRow): string;
